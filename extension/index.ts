@@ -15,7 +15,10 @@
  * Everything fails open: with jev or the engine down, pi behaves like stock pi.
  *
  * Config (env):
- *   DH_JEV_URL         jev adapter base        (default http://127.0.0.1:8090)
+ *   DH_JEV_URL         jev base URL             (default http://127.0.0.1:8090; hosted:
+ *                      https://api.typesafe.ai — the wire format is the public Jev API)
+ *   DH_JEV_KEY         bearer token for jev     (default empty; hosted/authenticated only)
+ *   DH_JEV_MODEL       "model" field per request (default empty; hosted Jev needs jev-latest)
  *   DH_JEV_TIMEOUT_MS  jev call timeout        (default 20000; auto/closing uses 3x)
  *   DH_SPARK_URL       OpenAI-compatible base for the local engine (default http://127.0.0.1:8091/v1)
  *   DH_SPARK_MODEL     model id                (default Spark-X2.5-4B; auto-discovered otherwise)
@@ -74,6 +77,10 @@ function int(name: string, fallback: number): number {
 const CFG = {
     jevUrl: env("DH_JEV_URL", "http://127.0.0.1:8090").replace(/\/+$/, ""),
     jevTimeoutMs: int("DH_JEV_TIMEOUT_MS", 20000),
+    // Optional auth/model for hosted or authenticated Jev-compatible services. The local
+    // adapter ignores both; the hosted API (api.typesafe.ai) requires `model` and a bearer key.
+    jevKey: env("DH_JEV_KEY", ""),
+    jevModel: env("DH_JEV_MODEL", ""),
     sparkUrl: env("DH_SPARK_URL", "http://127.0.0.1:8091/v1").replace(/\/+$/, ""),
     sparkModel: env("DH_SPARK_MODEL", "Spark-X2.5-4B"),
     sparkCtx: int("DH_SPARK_CTX", 16384),
@@ -113,8 +120,17 @@ async function jevPost(path: string, body: unknown, timeoutMs: number): Promise<
     const post = (): Promise<Response> =>
         fetch(CFG.jevUrl + path, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            headers: {
+                "Content-Type": "application/json",
+                ...(CFG.jevKey ? { Authorization: `Bearer ${CFG.jevKey}` } : {}),
+            },
+            // The hosted Jev API requires `model`; local adapters do not care. Send it only
+            // when configured so the default request body stays minimal.
+            body: JSON.stringify(
+                CFG.jevModel && body && typeof body === "object"
+                    ? { ...(body as Record<string, unknown>), model: CFG.jevModel }
+                    : body,
+            ),
             signal: AbortSignal.timeout(timeoutMs),
         });
     const retryPause = (): Promise<void> => new Promise((r) => setTimeout(r, 500));
@@ -135,9 +151,9 @@ async function jevPost(path: string, body: unknown, timeoutMs: number): Promise<
     }
     if (!res.ok) {
         const detail = (await res.text().catch(() => "")).slice(0, 200);
-        // 5xx = jev is up but erroring (engine busy/cold) — retry once before failing.
-        // Other statuses (4xx...) are deterministic; retrying won't change them.
-        if (res.status >= 500) {
+        // 5xx, 429 and 529 = jev is up but busy/cold — retry once before failing. Other
+        // 4xx are deterministic (bad key, bad body); retrying won't change them.
+        if (res.status >= 500 || res.status === 429) {
             log(`jev ${path} -> HTTP ${res.status} — retrying once`);
             await retryPause();
             try {
@@ -151,7 +167,8 @@ async function jevPost(path: string, body: unknown, timeoutMs: number): Promise<
             }
             return res.json();
         }
-        throw new JevUnavailable(`jev ${path} -> HTTP ${res.status}: ${detail}`);
+        const hint = res.status === 401 || res.status === 403 ? " (check DH_JEV_KEY)" : "";
+        throw new JevUnavailable(`jev ${path} -> HTTP ${res.status}: ${detail}${hint}`);
     }
     return res.json();
 }
@@ -610,17 +627,29 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
             const desc = extracted.find((c) => c.key === d.choice)?.description || "";
             return `\n\n---\n**JEV closing decision: ${d.choice}${desc ? ` (${desc})` : ""}** (confidence=${d.confidence.toFixed(2)})\n- ${dist}`;
         }
-        const r = await jevPost("/v1/systemone/auto", {
-            state,
-            questions: {
-                verdict: {
-                    type: "auto",
-                    instructions:
-                        "Generate 3-5 concrete candidate ANSWERS to the user's question (the actual options, tools or approaches being chosen between — e.g. 'python', 'bash'), never descriptions of what an answer should contain. Then pick the best.",
-                    num_options: 4,
+        // /auto is an llm2jev extension, not part of the published Jev wire format: a 404
+        // from a hosted or minimal service means "no option generation here", not "jev is
+        // down" — degrade to no verdict for this question instead of tripping jevDown.
+        let r: any;
+        try {
+            r = await jevPost("/v1/systemone/auto", {
+                state,
+                questions: {
+                    verdict: {
+                        type: "auto",
+                        instructions:
+                            "Generate 3-5 concrete candidate ANSWERS to the user's question (the actual options, tools or approaches being chosen between — e.g. 'python', 'bash'), never descriptions of what an answer should contain. Then pick the best.",
+                        num_options: 4,
+                    },
                 },
-            },
-        }, Math.max(CFG.jevTimeoutMs * 3, 60000));
+            }, Math.max(CFG.jevTimeoutMs * 3, 60000));
+        } catch (e) {
+            if (e instanceof JevUnavailable && /\b404\b/.test(e.message)) {
+                log("closer: this jev service has no /auto endpoint — skipping verdict");
+                return null;
+            }
+            throw e;
+        }
         const a = r.answers.verdict;
         const gen = a.generated_options as Record<string, string>;
         const dist = Object.entries(a.probabilities as Record<string, number>)

@@ -2,8 +2,8 @@
 
 A single [pi](https://github.com/earendil-works/pi) extension (TypeScript, no build step, no
 fork) that adds four anti-hallucination mechanisms to a normal coding agent. Classification
-and decision calls go to **jev**, a separate local calibrated decision service; the main
-model can be anything pi supports.
+and decision calls go to a **[Jev](https://docs.typesafe.ai)-compatible** calibrated decision
+service — local or hosted; the main model can be anything pi supports.
 
 ```
 user request ──► ① jev format router ──► pi agent loop (normal tools) ──► final message pipeline
@@ -84,16 +84,24 @@ pi --extension ./extension/index.ts --model spark-local/Spark-X2.5-4B           
 pi --extension ./extension/index.ts --model spark-local/Spark-X2.5-4B -p "..."  # headless
 ```
 
-The `jev` service is a small HTTP wrapper around a local OpenAI-compatible engine. The
-extension uses only:
+### Jev compatibility
 
-```
-POST /v1/systemone         {state, questions}  →  {answers: {<name>: {choice|noul|score, probabilities, confidence}}}
-POST /v1/systemone/auto    {state, questions}  →  generated options + choice
-GET  /                     any 2xx = ready
-```
+The extension speaks the public **Jev wire format**: `POST /v1/systemone` with `noul` /
+`choice` / `score` questions and typed answers. The decision service does not have to be
+local. Only the format checker's nested re-emission needs an OpenAI-compatible engine
+(`/v1/chat/completions`); with a hosted jev and no local engine it simply skips repairs.
 
-The format checker also calls the engine directly (`/v1/chat/completions`).
+| backend | configuration |
+|---|---|
+| local adapter (default) | `DH_JEV_URL=http://127.0.0.1:8090` — any llm2jev-compatible server |
+| hosted TypeSafe Jev | `DH_JEV_URL=https://api.typesafe.ai`, `DH_JEV_KEY=…`, `DH_JEV_MODEL=jev-latest` |
+| your own service | implement `POST /v1/systemone`; `state` may be a string, object or array |
+
+`state` is sent as an array of chat messages, which the spec accepts alongside strings and
+objects. `POST /v1/systemone/auto` (option generation when a choice question has no
+extractable alternatives) is an llm2jev extension, **not** part of the published spec:
+services without it return 404, which the extension treats as "no verdict for this question"
+rather than an outage — every other question type keeps working.
 
 Any stronger main model works — the extension never assumes the local one. Verified with the
 free `xingchen-agi/xing4.0-29b-a4b:free` via OpenRouter while jev stays local:
@@ -111,8 +119,10 @@ reads stdin when it is not a terminal and otherwise blocks with no output.
 
 | var | default | meaning |
 |---|---|---|
-| `DH_JEV_URL` | `http://127.0.0.1:8090` | jev base URL |
-| `DH_JEV_TIMEOUT_MS` | `20000` | jev timeout (closing round uses 3×, `/auto` ≥60 s) |
+| `DH_JEV_URL` | `http://127.0.0.1:8090` | jev base URL (hosted: `https://api.typesafe.ai`) |
+| `DH_JEV_KEY` | empty | bearer token sent as `Authorization` (hosted/authenticated services) |
+| `DH_JEV_MODEL` | empty | `model` field sent with every request (hosted Jev requires `jev-latest`) |
+| `DH_JEV_TIMEOUT_MS` | `20000` | jev timeout (closing round uses 3×, `/auto` ≥60 s; 429/5xx retried once) |
 | `DH_SPARK_URL` | `http://127.0.0.1:8091/v1` | OpenAI-compatible engine base |
 | `DH_SPARK_MODEL` | `Spark-X2.5-4B` | model id (auto-discovered when the engine is up) |
 | `DH_SPARK_CTX` | `16384` | declared context window; pi derives the output budget from it (too small ⇒ `max_completion_tokens=1`) |
