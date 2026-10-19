@@ -1,0 +1,3 @@
+app_name=fixture-app
+version=1.4.2-rc.3+build.20261017
+greeting=你好，世界 🌍

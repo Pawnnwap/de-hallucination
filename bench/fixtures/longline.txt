@@ -1,0 +1,3 @@
+# webhook signing key (test fixture)
+signing_key=SysC6DaMNZzvNX3RbBWhIRrqk0VNDcpy-ZP0YvaWAbbokjVEL3kFXeT0qFL-xwXi8eR0v9s_0KgTlqG9MF8eaj3Fd-qzFVaE
+algorithm=HMAC-SHA256

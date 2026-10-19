@@ -1,0 +1,180 @@
+# de-hallucination — a pi extension that routes, quotes and decides via jev
+
+A single [pi](https://github.com/earendil-works/pi) extension (TypeScript, no build step, no
+fork) that adds four anti-hallucination mechanisms to a normal coding agent. Classification
+and decision calls go to **jev**, a separate local calibrated decision service; the main
+model can be anything pi supports.
+
+```
+user request ──► ① jev format router ──► pi agent loop (normal tools) ──► final message pipeline
+                  chat / doc            read bash edit grep find ls       ②③ render + close + check
+                  code / json / yaml / csv                                 │
+                  choice / score / binary                                  ▼
+                                                                        user sees:
+                  ┌─────────────────────────────────────────────────── exact-quoted text
+                  │ ① router: one jev choice question per request      (+ JEV verdict block
+                  │ ② templates: {var} placeholders rendered            when binary/choice/score)
+                  │ ③ jev_decide tool: calibrated decisions
+```
+
+## Mechanisms
+
+### 1. Verbatim quoting via `{var}` templates
+
+Every tool call records template variables with deterministic names:
+
+| tool | variables |
+|---|---|
+| `read` | `read{N}_path`, `read{N}_content` |
+| `bash` | `bash{N}_cmd`, `bash{N}_out`, `bash{N}_exit` |
+| `edit` | `edit{N}_path`, `edit{N}_diff` |
+| `write` | `write{N}_path`, `write{N}_content` |
+| `grep` / `find` / `ls` | `{tool}{N}_pattern` / `{tool}{N}_path`, `{tool}{N}_out` |
+
+A per-request policy plus a `[vars: …]` hint on each tool result tell the model to quote
+those facts as `{varname}` instead of retyping them. The final message is rendered by exact
+substitution (f-string semantics). **Only known names are substituted** — every other brace
+passes through byte-identical, so code blocks cannot be corrupted. Values are capped at
+`DH_MAX_VAR_CHARS` with an explicit truncation marker.
+
+### 2. Format router, closing round, format checker
+
+Each request is classified by jev (one `choice` question, ~1 s) into `chat / doc / code /
+json / yaml / csv / choice / score / binary`. A hard-injected routing preamble lifted router
+accuracy on 18 labeled prompts from 14/18 @ 0.762 to **17/18 @ 0.907**
+(`python bench/router_eval.py` reproduces both). Then:
+
+- **binary / choice / score** — after the model finishes, jev runs a **closing round** on
+  `[request, final output sans thinking]`: `noul` for yes/no, extracted alternatives for
+  choice (falling back to `/v1/systemone/auto`), a 5-level `score` question otherwise. The
+  verdict is appended as a marked block with top-3 probabilities; the model's analysis stays
+  as evidence.
+- **code / json / yaml / csv** — deterministic validators first (JSON.parse for objects *and*
+  arrays, JSON-in-prose extraction, YAML/CSV heuristics, code-fence balance). Only when
+  invalid: one nested LLM call re-emits the payload strictly, re-validated, ≤2 retries.
+  Formatting changes, facts never do.
+- **chat / doc** — template rendering only.
+
+### 3. `jev_decide` tool
+
+`jev_decide(context, choices[])` returns the argmax choice, a probability for every choice,
+and a confidence — instead of a guess in prose. If jev is unreachable the tool throws and the
+model decides itself.
+
+### 4. `news_search` tool
+
+`news_search(query, limit?, hours?)` searches a local corpus (`DH_NEWS_DIR`, or `news/` /
+`bench/fixtures/news/`) or live HN via Algolia (`DH_NEWS_LIVE=1`). Results are registered as
+`{news…}` variables so quoted facts render byte-exact. Comparison questions ("which happened
+later?") route to `choice` and get a JEV verdict over the extracted alternatives. A dead live
+backend falls back to the local corpus.
+
+## Everything fails open
+
+jev unreachable ⇒ router defaults to `chat`, closer/checker skip, `jev_decide` errors loudly.
+pi behaves exactly like stock pi; the smoke matrix verifies it.
+
+## Setup
+
+```bash
+npm i -g @earendil-works/pi-coding-agent        # tested with 1.3.0
+
+# jev runs separately (llama-server :8091 + adapter :8090); start it, then:
+pi --extension ./extension/index.ts --model spark-local/Spark-X2.5-4B            # interactive
+pi --extension ./extension/index.ts --model spark-local/Spark-X2.5-4B -p "..."  # headless
+```
+
+The `jev` service is a small HTTP wrapper around a local OpenAI-compatible engine. The
+extension uses only:
+
+```
+POST /v1/systemone         {state, questions}  →  {answers: {<name>: {choice|noul|score, probabilities, confidence}}}
+POST /v1/systemone/auto    {state, questions}  →  generated options + choice
+GET  /                     any 2xx = ready
+```
+
+The format checker also calls the engine directly (`/v1/chat/completions`).
+
+Any stronger main model works — the extension never assumes the local one. Verified with the
+free `xingchen-agi/xing4.0-29b-a4b:free` via OpenRouter while jev stays local:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...    # keep it in a gitignored .env.local
+pi --extension ./extension/index.ts --model "openrouter/xingchen-agi/xing4.0-29b-a4b:free"
+PI_MODEL="openrouter/xingchen-agi/xing4.0-29b-a4b:free" bash bench/bench.sh 3
+```
+
+Headless runs from a non-TTY context must redirect stdin (`< /dev/null`): pi's `-p` mode
+reads stdin when it is not a terminal and otherwise blocks with no output.
+
+### Configuration
+
+| var | default | meaning |
+|---|---|---|
+| `DH_JEV_URL` | `http://127.0.0.1:8090` | jev base URL |
+| `DH_JEV_TIMEOUT_MS` | `20000` | jev timeout (closing round uses 3×, `/auto` ≥60 s) |
+| `DH_SPARK_URL` | `http://127.0.0.1:8091/v1` | OpenAI-compatible engine base |
+| `DH_SPARK_MODEL` | `Spark-X2.5-4B` | model id (auto-discovered when the engine is up) |
+| `DH_SPARK_CTX` | `16384` | declared context window; pi derives the output budget from it (too small ⇒ `max_completion_tokens=1`) |
+| `DH_SPARK_MAX_OUT` | `6144` | max output tokens |
+| `DH_SPARK_THINK` | on | `=0` disables native thinking (faster, measured sloppier on a 4B) |
+| `DH_MAX_VAR_CHARS` | `8192` | per-variable value cap |
+| `DH_DISABLE_ROUTER/_TEMPLATES/_CLOSER/_CHECKER/_DECIDE` | off | `=1` disables one mechanism (all five = stock pi) |
+| `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
+
+## Tests
+
+```bash
+node smoke/units.js    # 19 deterministic checks, no LLM: render/strip, JSON extraction,
+                       # format checks, verification guard, env parsing, var capture
+bash smoke/smoke.sh    # units, then binary/choice/json/templates + fail-open against the stack
+python bench/router_eval.py            # router accuracy with/without the preamble
+```
+
+## Benchmark
+
+```bash
+bash bench/bench.sh 3                    # 14 tasks × both arms × 3 runs
+bash bench/bench.sh 3 quote_hard fix_bug # task filter
+```
+
+Both arms run on the identical stack (same model/temperature; baseline = all five features
+off, verified stock behavior). Tasks cover exact quoting among decoys, a 96-char key, a
+64-hex sha256, an off-by-one fix verified by running it, strict JSON from CSV, news-search
+disambiguation, multi-source synthesis, and a 58k-token needle file.
+
+**Measured on Spark-X2.5-4B (N=3/arm): 17/18 vs 17/18.** The extension ties raw accuracy
+while removing stock's two observed failure modes: empty replies from token-cap thinking
+loops (bounded continuation) and un-flagged "verified" claims that contradict the recorded
+command output (deterministic guard). At 29B both arms hit the ceiling; the value there is
+failure-mode insurance, auditable provenance and closing verdicts. Full round-by-round:
+[bench/results/summary_20261018.md](bench/results/summary_20261018.md). Concrete
+side-by-side transcripts: [EXAMPLES.md](EXAMPLES.md).
+
+## Examples
+
+[EXAMPLES.md](EXAMPLES.md) has three real, measured comparisons: a calibrated closing verdict
+vs a bare answer, byte-exact quoting with substitution provenance vs retyping, and a recorded
+4B confabulation (a 48-char decoy reported as a 64-hex salt).
+
+## Known behavior / limitations
+
+- **Where replacements land:** pi's `message_end` replacement reaches the session file and the
+  live TUI, but the headless `-p` stdout and the next turn's model context keep the model's
+  original text. The next turn may therefore contain unreplaced `{placeholders}` — harmless,
+  since the next final message is rendered again.
+- **Template variables persist for the session:** a placeholder written later resolves to the
+  value recorded when its tool ran (f-string semantics).
+- **jev failures self-heal:** timeouts/5xx are retried once; after any failure the router and
+  closer re-probe once the 15 s cooldown has elapsed instead of staying dark.
+- **Search-class exit codes:** the guard ignores a bare nonzero exit for `grep`/`find`/`test`/
+  `diff` (exit 1 is their normal answer) and only judges the current turn's `bash` output.
+- The choice closer trusts a regex extractor (2–6 short items); otherwise `/auto` generates
+  candidates with the same local model. The checker validates payloads, not prose, and for
+  code only checks fence balance — it does not compile or lint.
+- jev is text-only and calibrated on single-token answers; option wording materially affects
+  routing/decision quality.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,5 @@
+Vantico dashboard outage resolved after 47 minutes, about 210,000 users affected
+
+LISBON, October 2, 2026 — Project-management tool vendor Vantico recovered from a dashboard outage on Friday that lasted 47 minutes and affected about 210,000 users, mostly in Iberia and Brazil. API endpoints stayed up throughout, the company said.
+
+The incident was traced to a failed certificate rotation in the front-end gateway. Vantico offered affected workspaces a 30-day credit as an apology. Unlike the larger Pulsegrid outage later in the month, no regulators were involved.

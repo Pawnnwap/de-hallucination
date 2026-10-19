@@ -1,0 +1,7 @@
+Kestrel DB 3.2 ships with vector index that the company says cuts recall latency 62%
+
+SEATTLE, October 12, 2026 — Kestrel Labs released version 3.2 of its open-source Kestrel DB on Monday, headlined by a rewritten vector index the company says cuts recall latency by 62% on billion-scale datasets and reduces memory footprint by 28%.
+
+Release notes list 217 merged pull requests from 43 contributors. The new index format is backward-incompatible with 3.1 snapshots, requiring a one-time migration that the docs estimate at roughly 40 minutes per billion vectors.
+
+Kestrel DB counts 9,100 production deployments according to the project's annual survey, up from 6,800 a year ago.

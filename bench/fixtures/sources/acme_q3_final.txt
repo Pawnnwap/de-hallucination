@@ -1,0 +1,12 @@
+ACME Analytics — Q3 2026 final results (revised statement, October 21, 2026)
+
+This revised statement supersedes the October 8 preliminary draft in full. Final figures
+after reconciling delayed EMEA partner bookings:
+
+- Q3 2026 revenue: $44.6 million (final, restated upward from the preliminary $42.0 million)
+- Active users at quarter end: 2.1 million (final)
+- Monthly churn rate: 2.8% (final, improved from preliminary 3.2%)
+- Net new enterprise contracts: 47 (final)
+- Data processed: 9.1 petabytes (final)
+
+These are the figures to cite for Q3 2026. The preliminary draft of October 8 is void.

@@ -1,0 +1,13 @@
+ACME Analytics — Q3 2026 preliminary results (internal draft, October 8, 2026)
+
+Prepared by the finance desk. NOTE: figures below are preliminary and subject to the
+final close; a revised statement will follow.
+
+- Q3 2026 revenue: $42.0 million (preliminary)
+- Active users at quarter end: 1.9 million
+- Monthly churn rate: 3.2%
+- Net new enterprise contracts: 41
+- Data processed: 8.4 petabytes
+
+Preliminary figures were computed before the delayed EMEA partner bookings were
+reconciled. Do not cite externally until the final statement is published.

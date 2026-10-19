@@ -1,0 +1,7 @@
+Pulsegrid outage lasted 4 hours 12 minutes and hit 3.7 million users in the EU
+
+FRANKFURT, October 14, 2026 — Payments provider Pulsegrid said Wednesday that last night's outage, its longest in three years, lasted 4 hours 12 minutes and affected about 3.7 million users across the EU. The company processes card transactions for roughly 41,000 merchants.
+
+In a post-incident note, engineering lead Tomas Brandt blamed a cascading retry storm triggered by a misconfigured connection pool in the transaction ledger service, deployed at 21:47 CET. The rollback completed at 02:03 CET.
+
+Pulsegrid said it will credit affected merchants an estimated €2.8 million in fees and publish a full root-cause report within two weeks. Regulators in Germany and the Netherlands confirmed they had opened routine inquiries.

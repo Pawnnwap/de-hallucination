@@ -1,0 +1,7 @@
+Kestrel Cloud 2.8 adds multi-region failover and usage-based cold storage
+
+SEATTLE, October 6, 2026 — Kestrel Labs' managed offering, Kestrel Cloud, gained multi-region failover and usage-based cold storage in version 2.8, released Tuesday. The failover feature promises a 90-second RTO between paired regions, and cold storage is priced at $0.011 per gigabyte per month.
+
+The company said Kestrel Cloud now serves 1,150 paying workspaces. General Manager Priya Raman said the two features were the most-requested items on the public roadmap for two consecutive quarters.
+
+A 2.9 release focused on audit logging is expected in December.
