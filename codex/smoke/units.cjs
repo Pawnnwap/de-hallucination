@@ -1,0 +1,451 @@
+#!/usr/bin/env node
+"use strict";
+
+const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync, spawn } = require("child_process");
+
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "dehall-units-"));
+const newsDir = path.resolve(__dirname, "..", "..", "pi", "bench", "fixtures", "news");
+process.env.DH_CODEX_STATE_DIR = stateDir;
+process.env.DH_NEWS_DIR = newsDir;
+
+const { renderTemplates, formatIssue, validateFormat, extractJsonCandidate, resultText, varsForTool, verificationGuard } =
+  require("../lib/text.cjs");
+const { extractOptions } = require("../lib/jev.cjs");
+const { withState, load, resetTurn } = require("../lib/state.cjs");
+const { searchLocalCorpus, formatNewsResult, parseNewsVars } = require("../lib/news.cjs");
+const { buildPolicy } = require("../hooks.cjs");
+
+let pass = 0;
+let fail = 0;
+function check(name, fn) {
+  try {
+    const r = fn();
+    if (r && typeof r.then === "function") throw new Error("check() received a promise");
+    pass++;
+    console.log(`PASS: ${name}`);
+  } catch (e) {
+    fail++;
+    console.log(`FAIL: ${name} — ${String(e.message || e).slice(0, 240)}`);
+  }
+}
+async function checkAsync(name, fn) {
+  try {
+    await fn();
+    pass++;
+    console.log(`PASS: ${name}`);
+  } catch (e) {
+    fail++;
+    console.log(`FAIL: ${name} — ${String(e.message || e).slice(0, 240)}`);
+  }
+}
+
+const hook = (event, env = {}) =>
+  JSON.parse(
+    execFileSync(process.execPath, [path.join(__dirname, "..", "hooks.cjs")], {
+      input: JSON.stringify(event),
+      env: { ...process.env, ...env },
+      encoding: "utf8",
+    }),
+  );
+
+(async () => {
+  check("render substitutes known vars byte-exact", () => {
+    const vars = { read1_path: "E:/x/notes.txt", bash1_out: "OK-73" };
+    const out = renderTemplates("path {read1_path} out {bash1_out}", vars);
+    assert.equal(out.text, "path E:/x/notes.txt out OK-73");
+    assert.deepEqual(out.replaced, ["read1_path", "bash1_out"]);
+  });
+
+  check("render leaves unknown braces and code untouched", () => {
+    const vars = { bash1_out: "OK" };
+    const src = "braces {not_a_var} code {x.done} {bash1_out}";
+    assert.equal(renderTemplates(src, vars).text, "braces {not_a_var} code {x.done} OK");
+  });
+
+  check("render strips echoed hint lines", () => {
+    const src = "[vars: bash1_out] — quote these\nanswer {bash1_out}\nDEHALL_VARS {\"x\":1}";
+    assert.equal(renderTemplates(src, { bash1_out: "OK" }).text, "answer OK");
+  });
+
+  check("JSON array is valid deliverable", () => {
+    assert.equal(validateFormat("```json\n[1,2]\n```", "json"), true);
+    assert.equal(validateFormat('prefix {"ok":true} suffix', "json"), true);
+    assert.equal(validateFormat("not json", "json"), false);
+  });
+
+  check("format issues are specific", () => {
+    assert.match(formatIssue("not json", "json"), /JSON\.parse failed/);
+    assert.match(formatIssue("```js\nx\n", "code"), /unbalanced/);
+    assert.equal(formatIssue("a: 1\nb: 2\n", "yaml"), null);
+    assert.equal(formatIssue("a,b\n1,2\n", "csv"), null);
+  });
+
+  check("json candidate extraction prefers outer span", () => {
+    assert.equal(extractJsonCandidate('x {"a":1} y'), '{"a":1}');
+  });
+
+  check("choice extraction finds named alternatives", () => {
+    const choices = extractOptions("Which is better for quick scripts: Python or Bash? Pick one.");
+    assert.deepEqual(choices.map((c) => c.key), ["python", "bash"]);
+    assert.equal(extractOptions("Summarize this report."), null);
+  });
+
+  check("verification guard flags success claims after errors", () => {
+    const vars = { bash1_out: "Traceback (most recent call last):\nboom", bash1_cmd: "python bad.py" };
+    assert.match(verificationGuard("I verified the fix works.", vars, 1), /de-hallucination check/);
+    assert.equal(verificationGuard("Here is the error output.", vars, 1), null);
+  });
+
+  check("bash vars capture command and output", () => {
+    const pairs = varsForTool("Bash", "bash1", { command: "echo hi" }, "hi\r\n", "hi\r\n");
+    assert.deepEqual(Object.fromEntries(pairs), { bash1_cmd: "echo hi", bash1_out: "hi\r\n" });
+  });
+
+  check("apply_patch vars extract path and diff", () => {
+    const input = { patch: "*** Begin Patch\n*** Update File: notes.txt\n@@\n-a\n+b\n*** End Patch" };
+    const pairs = Object.fromEntries(varsForTool("apply_patch", "edit1", input, "Success", "Success"));
+    assert.equal(pairs.edit1_path, "notes.txt");
+    assert.match(pairs.edit1_patch, /Update File/);
+    assert.equal(pairs.edit1_diff, "Success");
+  });
+
+  check("tool_response object text extraction", () => {
+    assert.equal(resultText({ output: "out" }), "out");
+    assert.equal(resultText({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
+  });
+
+  check("state roundtrip keeps vars and resets turn", () => {
+    withState("unit-session", (st) => {
+      resetTurn(st, "t1", "prompt");
+      st.vars.bash1_out = "OK";
+      st.turn.format = "binary";
+    });
+    withState("unit-session", (st) => {
+      resetTurn(st, "t2", "next");
+    });
+    const st = load("unit-session");
+    assert.equal(st.vars.bash1_out, "OK");
+    assert.equal(st.turn.format, "chat");
+    assert.equal(st.turn.id, "t2");
+  });
+
+  await checkAsync("local news corpus finds the right company", async () => {
+    const hits = await searchLocalCorpus("Nordvine funding round", 3);
+    assert.ok(hits.length >= 1);
+    assert.match(hits[0].source, /nordvine/);
+  });
+
+  check("news vars marker roundtrip", () => {
+    const { text } = formatNewsResult(
+      "Nordvine",
+      [{ source: "x", date: "2026-01-01", title: "T", text: "B" }],
+      "news42",
+    );
+    const parsed = parseNewsVars(text);
+    assert.equal(parsed.base, "news42");
+    assert.equal(parsed.vars.news42_r1_title, "T");
+  });
+
+  check("policy mentions the CLI mechanisms and compact quoting", () => {
+    const p = buildPolicy();
+    assert.match(p, /Verbatim quoting policy/);
+    assert.match(p, /Compact quoting/);
+    assert.match(p, /Never paste the same variable/);
+    assert.match(p, /cli\.cjs/);
+    assert.match(p, /jev-decide/);
+    assert.match(p, /news-search/);
+  });
+
+  await checkAsync("CLI news-search returns hits and vars", async () => {
+    const out = execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "cli.cjs"), "news-search", "Nordvine funding round", "--limit", "2"],
+      { env: { ...process.env, DH_NEWS_DIR: newsDir }, encoding: "utf8" },
+    );
+    assert.match(out, /Nordvine/i);
+    assert.match(out, /DEHALL_VARS/);
+  });
+
+  await checkAsync("hook pipeline captures vars and renders them at Stop", async () => {
+    const sid = "hook-" + process.pid;
+    const common = { DH_DISABLE_ROUTER: "1" };
+    const session = hook(
+      { hook_event_name: "SessionStart", session_id: sid, source: "startup", cwd: process.cwd(), model: "chat" },
+      common,
+    );
+    assert.match(session.hookSpecificOutput.additionalContext, /Verbatim quoting policy/);
+    const prompt = hook(
+      { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "turn-1", prompt: "read notes", cwd: process.cwd() },
+      common,
+    );
+    assert.match(prompt.hookSpecificOutput.additionalContext, /de-hallucination/);
+    hook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: sid,
+        turn_id: "turn-1",
+        tool_name: "Bash",
+        tool_use_id: "call-1",
+        tool_input: { command: "Get-Content notes.txt" },
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    const post = hook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: sid,
+        turn_id: "turn-1",
+        tool_name: "Bash",
+        tool_use_id: "call-1",
+        tool_input: { command: "Get-Content notes.txt" },
+        tool_response: "unusual-tokens_XY73\r\n",
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    assert.match(post.hookSpecificOutput.additionalContext, /bash1_cmd/);
+    assert.match(post.hookSpecificOutput.additionalContext, /bash1_out/);
+    const stop = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: sid,
+        turn_id: "turn-1",
+        last_assistant_message: "The exact output is {bash1_out}",
+        stop_hook_active: false,
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    assert.match(stop.systemMessage, /rendered final reply/);
+    assert.match(stop.systemMessage, /unusual-tokens_XY73/);
+    assert.ok(!stop.systemMessage.includes("{bash1_out}"));
+  });
+
+  await checkAsync("Bash CLI news output becomes vars and renders at Stop", async () => {
+    const sid = "news-hook-" + process.pid;
+    const common = { DH_DISABLE_ROUTER: "1", DH_NEWS_DIR: newsDir };
+    const cliOut = execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "cli.cjs"), "news-search", "Nordvine funding round", "--limit", "1"],
+      { env: { ...process.env, DH_NEWS_DIR: newsDir }, encoding: "utf8" },
+    );
+    hook(
+      { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "tn", prompt: "news?", cwd: process.cwd() },
+      common,
+    );
+    hook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: sid,
+        turn_id: "tn",
+        tool_name: "Bash",
+        tool_use_id: "call-news",
+        tool_input: { command: "node codex/cli.cjs news-search ..." },
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    const post = hook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: sid,
+        turn_id: "tn",
+        tool_name: "Bash",
+        tool_use_id: "call-news",
+        tool_input: { command: "node codex/cli.cjs news-search ..." },
+        tool_response: cliOut,
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    const hint = post.hookSpecificOutput.additionalContext;
+    assert.match(hint, /news\d+_r1_title/);
+    const name = hint.match(/news\d+_r1_date/)[0];
+    const stop = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: sid,
+        turn_id: "tn",
+        last_assistant_message: `The date is {${name}}.`,
+        stop_hook_active: false,
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    assert.match(stop.systemMessage, /2026-10-03/);
+    assert.ok(!stop.systemMessage.includes(`{${name}}`));
+  });
+
+  await checkAsync("DH_CODEX_RENDER=block requests one corrected reply", async () => {
+    const sid = "render-block-" + process.pid;
+    const common = { DH_DISABLE_ROUTER: "1", DH_CODEX_RENDER: "block" };
+    hook(
+      { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "tr", prompt: "value?", cwd: process.cwd() },
+      common,
+    );
+    hook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: sid,
+        turn_id: "tr",
+        tool_name: "Bash",
+        tool_use_id: "call-rb",
+        tool_input: { command: "echo OK-73" },
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    hook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: sid,
+        turn_id: "tr",
+        tool_name: "Bash",
+        tool_use_id: "call-rb",
+        tool_input: { command: "echo OK-73" },
+        tool_response: "OK-73\n",
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    const stop = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: sid,
+        turn_id: "tr",
+        last_assistant_message: "value {bash1_out}",
+        stop_hook_active: false,
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    assert.equal(stop.decision, "block");
+    assert.match(stop.reason, /OK-73/);
+    const stop2 = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: sid,
+        turn_id: "tr",
+        last_assistant_message: "value OK-73",
+        stop_hook_active: true,
+        cwd: process.cwd(),
+      },
+      common,
+    );
+    assert.ok(!stop2.decision);
+  });
+
+  await checkAsync("Stop checker validates rendered text, not raw placeholders", async () => {
+    const sid = "checker-render-" + process.pid;
+    withState(sid, (st) => {
+      resetTurn(st, "tx", "Give me JSON");
+      st.turn.format = "json";
+      st.vars.bash1_out = 'a"b';
+    });
+    const stop = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: sid,
+        turn_id: "tx",
+        last_assistant_message: '{"x":"{bash1_out}"}',
+        stop_hook_active: false,
+        cwd: process.cwd(),
+      },
+      { DH_DISABLE_ROUTER: "1" },
+    );
+    assert.equal(stop.decision, "block");
+    assert.match(stop.reason, /not valid json/);
+    assert.match(stop.reason, /user-visible final answer/);
+  });
+
+  await checkAsync("Stop checker blocks once, then accepts the corrected JSON", async () => {
+    const sid = "check-" + process.pid;
+    withState(sid, (st) => {
+      resetTurn(st, "tj", "Give me JSON");
+      st.turn.format = "json";
+    });
+    const base = {
+      hook_event_name: "Stop",
+      session_id: sid,
+      turn_id: "tj",
+      stop_hook_active: false,
+      cwd: process.cwd(),
+    };
+    const bad = hook({ ...base, last_assistant_message: "not json" }, { DH_DISABLE_ROUTER: "1" });
+    assert.equal(bad.decision, "block");
+    assert.match(bad.reason, /not valid json/);
+    const good = hook(
+      { ...base, last_assistant_message: '{"ok":true}', stop_hook_active: true },
+      { DH_DISABLE_ROUTER: "1" },
+    );
+    assert.ok(!good.decision);
+    assert.match(good.systemMessage, /corrected json deliverable is valid/);
+  });
+
+  await checkAsync("MCP server handshake, tool list and news call", async () => {
+    const child = spawn(process.execPath, [path.join(__dirname, "..", "mcp-server.cjs")], {
+      env: { ...process.env, DH_NEWS_DIR: newsDir },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const pending = new Map();
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      let idx;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        const resolver = pending.get(msg.id);
+        if (resolver) {
+          pending.delete(msg.id);
+          resolver(msg);
+        }
+      }
+    });
+    let nextId = 1;
+    const rpc = (method, params) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        const timer = setTimeout(() => reject(new Error(`MCP timeout on ${method}`)), 10000);
+        pending.set(id, (msg) => {
+          clearTimeout(timer);
+          if (msg.error) reject(new Error(msg.error.message));
+          else resolve(msg.result);
+        });
+        child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      });
+    try {
+      const init = await rpc("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "dehall-test", version: "1" },
+      });
+      assert.equal(init.serverInfo.name, "dehall");
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      const list = await rpc("tools/list", {});
+      const names = list.tools.map((t) => t.name);
+      assert.ok(names.includes("jev_decide"));
+      assert.ok(names.includes("news_search"));
+      const news = await rpc("tools/call", {
+        name: "news_search",
+        arguments: { query: "Nordvine funding round", limit: 2 },
+      });
+      const text = news.content.map((c) => c.text).join("\n");
+      assert.match(text, /Nordvine|nordvine/i);
+      assert.match(text, /DEHALL_VARS/);
+    } finally {
+      child.kill();
+    }
+  });
+
+  fs.rmSync(stateDir, { recursive: true, force: true });
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

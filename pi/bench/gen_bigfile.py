@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate bench/fixtures/bigfile.txt — a deterministic ~210KB (~55-60k token) deployment
+"""Generate pi/bench/fixtures/bigfile.txt — a deterministic ~210KB (~55-60k token) deployment
 audit log with eight 64-hex salt needles at controlled depths, plus expected_salts.json
-for the scorer. Usage: python bench/gen_bigfile.py"""
+for the scorer. Usage: python pi/bench/gen_bigfile.py"""
 import json
 import random
 import os

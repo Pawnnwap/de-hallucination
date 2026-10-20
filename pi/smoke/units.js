@@ -2,14 +2,14 @@
 /**
  * Deterministic unit checks for the de-hallucination extension helpers.
  *
- *   node smoke/units.js        -> "PASS: <check>" / "FAIL: <check>", exit 1 on any failure
+ *   node pi/smoke/units.js     -> "PASS: <check>" / "FAIL: <check>", exit 1 on any failure
  *
  * These cover the pure guardrails (template rendering, JSON payload extraction,
  * format validation, verification guard, env parsing, var capture) with no LLM/jev
  * dependency, so regressions surface without a full smoke run.
  */
 (async () => {
-    const { __internals: I } = await import("../extension/index.ts");
+    const { __internals: I } = await import("../index.ts");
     let pass = 0;
     let fail = 0;
     const check = (name, ok, detail) => {

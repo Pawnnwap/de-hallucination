@@ -4,7 +4,7 @@
 # local Spark-X2.5-4B stack. Verbatim-exactness tasks are the extension's home turf;
 # fix_bug measures that everyday coding is not harmed.
 #
-# Usage:  bash bench/bench.sh [N]        (N = repeats per task per arm, default 3)
+# Usage:  bash pi/bench/bench.sh [N]     (N = repeats per task per arm, default 3)
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -39,7 +39,7 @@ PROMPTS=(
 )
 # long-context fixture is generated (gitignored) — regenerate when missing
 [ -f bench/fixtures/bigfile.txt ] || python bench/gen_bigfile.py >/dev/null
-# optional task filter: bash bench/bench.sh 3 json_from_csv search_token
+# optional task filter: bash pi/bench/bench.sh 3 json_from_csv search_token
 if [ $# -ge 2 ]; then
   FILTERED=()
   for t in "${TASKS[@]}"; do
@@ -88,7 +88,7 @@ run_one() { # run_one <arm> <task> <i>
       if [ "$arm" = "without" ]; then
         eval "export $BASELINE_ENV"
       fi
-      DH_DEBUG=1 pi --extension "$ROOT/extension/index.ts" \
+      DH_DEBUG=1 pi --extension "$ROOT/index.ts" \
         --model "$MODEL" -p --session-dir "$dir" "$prompt" < /dev/null 2>"$dir/stderr.log"
     )
     flaked "$dir" || break

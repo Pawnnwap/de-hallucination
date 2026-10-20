@@ -3,10 +3,12 @@ tmp-s*/
 notes.txt
 *.log
 node_modules/
-.smoke-work/
-.bench-work/
-bench/results/*
-!bench/results/summary_*.md
+pi/.smoke-work/
+pi/.bench-work/
+pi/bench/results/*
+!pi/bench/results/summary_*.md
+.codex-test*/
+codex/.smoke-work/
 .env.local
 bigfile.txt
 expected_salts.json

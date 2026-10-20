@@ -5,7 +5,7 @@
 # Prereqs: pi CLI installed (npm i -g @earendil-works/pi-coding-agent), local stack up
 # (start_jev.bat in the jev checkout -> jev :8090 + llama-server :8091).
 #
-# Usage: bash smoke/smoke.sh            (from the repo root)
+# Usage: bash pi/smoke/smoke.sh         (from the repo root, or `bash smoke/smoke.sh` from pi/)
 set -u
 cd "$(dirname "$0")/.."
 
@@ -38,7 +38,7 @@ run_pi() { # run_pi <label> <prompt>  (the local 4B occasionally burns its whole
   for i in 1 2; do
     mkdir -p "$WORK/$label"
     [ "$i" = 2 ] && { echo "  (length-flake on attempt 1, retrying)"; rm -f "$WORK/$label"/*.jsonl; }
-    DH_DEBUG=1 pi --extension ./extension/index.ts --model "$MODEL" \
+    DH_DEBUG=1 pi --extension ./index.ts --model "$MODEL" \
       -p --session-dir "$WORK/$label" "$1" < /dev/null 2>"$WORK/$label/stderr.log"
     flaked "$label" || break
   done
@@ -92,7 +92,7 @@ if grep -q "substitutions: [1-9]" "$WORK/tpl/stderr.log"; then
 fi
 # Deterministic mechanism check — live placeholder usage is stochastic model behavior.
 if node -e "
-import('./extension/index.ts').then(m => {
+import('./index.ts').then(m => {
   const { renderTemplates } = m.__internals;
   const vars = new Map([['read1_path','/work/notes.txt'],['bash1_out','OK-73']]);
   const out = renderTemplates('path {read1_path} out {bash1_out} braces {not_a_var} code {x.done}', vars);
@@ -106,7 +106,7 @@ else echo "PASS: no unresolved placeholders leak"; PASS=$((PASS+1)); fi
 
 note "5. fail-open with jev down"
 mkdir -p "$WORK/dead"
-DH_DEBUG=1 DH_JEV_URL=http://127.0.0.1:8099 pi --extension ./extension/index.ts \
+DH_DEBUG=1 DH_JEV_URL=http://127.0.0.1:8099 pi --extension ./index.ts \
   --model "$MODEL" -p --session-dir "$WORK/dead" \
   "Is 7 a prime number? Answer with yes or no." < /dev/null 2>"$WORK/dead/stderr.log"
 check "failed open to chat"       "failing open to chat"      "$WORK/dead/stderr.log"

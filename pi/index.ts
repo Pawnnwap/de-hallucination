@@ -40,7 +40,7 @@
  *                      as the baseline arm of bench/bench.sh)
  *   DH_DEBUG=1         verbose stderr logging
  *
- * Use with:  pi --extension ./extension/index.ts --model spark-local/<model-id>
+ * Use with:  pi --extension ./pi/index.ts --model spark-local/<model-id>
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, promises as fsp } from "fs";
@@ -480,7 +480,7 @@ const KNOWN_PREFIX_RE = /^(read|bash|powershell|edit|write|grep|find|ls|news)\d+
 
 let renderSubstitutions = 0;
 
-function renderTemplates(text: string, v: Map<string, string> = vars): string {
+function renderTemplates(text: string, v: Map<string, string> = vars, count = true): string {
     // Drop hint lines the model echoed verbatim from tool results, then substitute.
     const cleaned = text.replace(/(^|\n)\[vars: [^\]]*\]( — [^\n]*)?(?=\n|$)/g, "").replace(/^\n+/, "");
     return cleaned.replace(VAR_RE, (whole, name: string) => {
@@ -491,7 +491,7 @@ function renderTemplates(text: string, v: Map<string, string> = vars): string {
             }
             return whole;
         }
-        renderSubstitutions++;
+        if (count) renderSubstitutions++;
         return value;
     });
 }
@@ -822,6 +822,10 @@ write the placeholder, never retype the value:
 - Write:  "The file at {read1_path} starts with: {read1_content}"
 - NEVER:  "The file at /work/notes.txt starts with: first line..."
 
+Compact quoting: when a large value (a whole file or command output) contains several facts
+you need, quote the variable once in its own block, then refer to the specific line or field
+by name. Never paste the same variable several times in one reply.
+
 Placeholders are replaced with the exact recorded values before the user sees your reply, so
 quoting is always byte-exact and cannot drift. Use exactly the listed variable names — never
 invent one. Braces that are not a listed variable name are left untouched, so braces inside
@@ -1136,8 +1140,14 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
             .map((c) => String(c.text))
             .join("\n");
 
+        // Analyze the user-visible text, not the placeholder text. Rendering after the
+        // closer/checker/guard can turn a structurally valid payload into an invalid one
+        // when a substituted value contains quotes or newlines.
+        const renderedLastOutput = CFG.templates ? renderTemplates(lastOutput, vars, false) : lastOutput;
+
         let changed = false;
         const newContent = [...content];
+        let deliverableAlreadyRendered = false;
 
         // The model's own last text part is the deliverable. Capture its index BEFORE
         // the closing round appends a verdict, so the format checker can never replace
@@ -1160,7 +1170,7 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
             }
             if (!runState.jevDown) {
                 log("closer: running for format", runState.format);
-                const verdict = await closingRound(runState.prompt, lastOutput);
+                const verdict = await closingRound(runState.prompt, renderedLastOutput);
                 log("closer: verdict =", verdict ? verdict.split("\n")[0] : "null");
                 if (verdict) {
                     newContent.push({ type: "text", text: verdict });
@@ -1172,24 +1182,28 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
         // 2c: format checker for code / json / yaml / csv (uses last output sans thinking —
         // thinking content is never part of `lastOutput` by construction above)
         if (CFG.checker && ["code", "json", "yaml", "csv"].includes(runState.format)) {
-            const result = await checkFormat(lastOutput, runState.format);
+            const result = await checkFormat(renderedLastOutput, runState.format);
             if (result && result.fixed && deliverableIdx >= 0 && newContent[deliverableIdx] && newContent[deliverableIdx].type === "text") {
                 newContent[deliverableIdx] = { type: "text", text: result.text };
+                deliverableAlreadyRendered = true;
                 changed = true;
             }
         }
 
         // 2d: verification guard against the recorded command outputs
-        const guard = verificationGuard(lastOutput);
+        const guard = verificationGuard(renderedLastOutput);
         if (guard) {
             newContent.push({ type: "text", text: guard });
             changed = true;
             log("verification guard triggered");
         }
 
-        // 1: template render on every text part (verdict included — harmless)
+        // 1: template render on every text part (verdict included — harmless).
+        // A checker-repaired deliverable was built from renderedLastOutput, so it must
+        // not be rendered a second time: substituted values may contain brace sequences.
         if (CFG.templates) {
             for (let i = 0; i < newContent.length; i++) {
+                if (i === deliverableIdx && deliverableAlreadyRendered) continue;
                 const c = newContent[i];
                 if (c && c.type === "text") {
                     const rendered = renderTemplates(String(c.text));

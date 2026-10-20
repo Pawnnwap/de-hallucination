@@ -1,0 +1,14 @@
+# Optional MCP transport. The default Codex install is hooks + codex/cli.cjs and
+# needs no MCP server. Add this only with: node codex/install.cjs --mcp
+# (project scope: <project>/.codex/config.toml; user scope: %CODEX_HOME%/config.toml)
+[mcp_servers.dehall]
+command = "node"
+args = ["<REPO>/codex/mcp-server.cjs"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+# Optional environment overrides (uncomment as needed):
+# [mcp_servers.dehall.env]
+# DH_JEV_URL = "http://127.0.0.1:8090"
+# DH_NEWS_DIR = "E:/path/to/news"
+# DH_NEWS_LIVE = "1"

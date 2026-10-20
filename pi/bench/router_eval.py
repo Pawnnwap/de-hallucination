@@ -2,7 +2,7 @@
 """Router accuracy eval: posts the exact question the extension sends to jev, with and
 without the routing preamble (the 'hard-injected system prompt'), against labeled prompts.
 
-Usage: python bench/router_eval.py [jev_url]
+Usage: python pi/bench/router_eval.py [jev_url]
 """
 import json
 import sys
