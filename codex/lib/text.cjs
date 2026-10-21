@@ -188,7 +188,7 @@ function verificationGuard(finalText, vars, bashMax) {
 }
 
 const hintFor = (names) =>
-  `[vars: ${names.join(" ")}] — quote these as {name} placeholders in your final reply; the de-hallucination Stop hook renders the exact recorded values.`;
+  `[vars: ${names.join(" ")}] — quote these as {name} placeholders in the final reply.`;
 
 function truncateNotice(text) {
   return text.length <= CFG.maxNoticeChars

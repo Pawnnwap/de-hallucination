@@ -154,8 +154,9 @@ const hook = (event, env = {}) =>
   check("policy mentions the CLI mechanisms and compact quoting", () => {
     const p = buildPolicy();
     assert.match(p, /Verbatim quoting policy/);
-    assert.match(p, /Compact quoting/);
-    assert.match(p, /Never paste the same variable/);
+    assert.match(p, /write the \{name\}/);
+    assert.match(p, /once in its own block/);
+    assert.match(p, /Only listed facts are quoted this way/);
     assert.match(p, /cli\.cjs/);
     assert.match(p, /jev-decide/);
     assert.match(p, /news-search/);
@@ -494,6 +495,86 @@ const hook = (event, env = {}) =>
     });
     check("twinFrame returns null when there is nothing to ablate", () =>
       gates.twinFrame([{ role: "user", content: "no digits in this request at all" }], 4000) === null);
+  check("twinFrame keeps the shared system preamble byte-identical", () => {
+    const st = [
+      { role: "system", content: gates.JUDGE_PREAMBLE },
+      { role: "user", content: "IC 0.061 in 2026Q3" },
+    ];
+    const f = gates.twinFrame(st, 4000);
+    return !!f && f[0].content === gates.JUDGE_PREAMBLE && /\[#\]/.test(f[1].content) && !/0\.061/.test(f[1].content);
+  });
+  await checkAsync("judge frames share one byte-stable prefix across router, closing and twin", async () => {
+    const http = require("http");
+    const frames = [];
+    const srv = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        const body = JSON.parse(raw || "{}");
+        frames.push(body.state);
+        const answers = {};
+        for (const [qid, q] of Object.entries(body.questions || {})) {
+          answers[qid] =
+            q.type === "noul"
+              ? { type: "noul", noul: 0.85 }
+              : { type: "choice", choice: "binary", probabilities: { binary: 0.8, chat: 0.2 }, confidence: 0.8 };
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ answers }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const env = { DH_JEV_URL: `http://127.0.0.1:${srv.address().port}`, DH_JEV_TIMEOUT_MS: "2000" };
+    // async spawn: the stub server lives in this process and must stay unblocked
+    const runHook = (event) =>
+      new Promise((resolve, reject) => {
+        const p = spawn(process.execPath, [path.join(__dirname, "..", "hooks.cjs")], {
+          env: { ...process.env, ...env },
+        });
+        let out = "";
+        p.stdout.on("data", (c) => (out += c));
+        p.on("error", reject);
+        p.on("close", () => resolve(out));
+        p.stdin.write(JSON.stringify(event));
+        p.stdin.end();
+      });
+    try {
+      await runHook({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "frame-test",
+        turn_id: "t1",
+        prompt: "Is the IC 0.061 monotonic in 2026Q3? yes or no?",
+      });
+      await runHook({
+        hook_event_name: "Stop",
+        session_id: "frame-test",
+        turn_id: "t1",
+        last_assistant_message: "Yes - the IC 0.061 curve is monotonic in 2026Q3.",
+      });
+    } finally {
+      srv.close();
+    }
+    assert.ok(frames.length >= 3, `expected router+closing+twin frames, got ${frames.length}`);
+    for (const st of frames) {
+      assert.equal(st[0].role, "system");
+      assert.ok(
+        String(st[0].content).startsWith(gates.JUDGE_PREAMBLE),
+        "every judge frame must open with the shared preamble",
+      );
+    }
+    const ser = (s) => JSON.stringify(s);
+    const lcp = (a, b) => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      return i;
+    };
+    for (let i = 1; i < frames.length; i++) {
+      assert.ok(
+        lcp(ser(frames[i - 1]), ser(frames[i])) >= ser([{ role: "system", content: gates.JUDGE_PREAMBLE }]).length - 3,
+        `frames ${i - 1}/${i} lost the shared prefix`,
+      );
+    }
+  });
   check("tvDistance is symmetric and bounded", () => {
     const d = gates.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
     return Math.abs(d - 0.4) < 1e-9 && gates.tvDistance({ a: 1 }, { a: 1 }) === 0;

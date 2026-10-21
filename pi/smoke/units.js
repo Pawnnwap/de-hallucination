@@ -40,7 +40,7 @@
     {
         const vars = new Map([["read1_path", "/p"]]);
         const out = I.renderTemplates(
-            "the path is {read1_path}\n[vars: read1_path] — quote these as {name} placeholders in your final reply; they are replaced with the exact recorded values",
+            "the path is {read1_path}\n[vars: read1_path] — quote these as {name} placeholders in the final reply.",
             vars,
         );
         check("render: strips echoed [vars:] hint line", out === "the path is /p", JSON.stringify(out));

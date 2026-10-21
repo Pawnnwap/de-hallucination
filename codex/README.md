@@ -26,7 +26,7 @@ Stop hook ─────► ② closing round (binary / choice / score)
 the important values from `tool_input`/`tool_response` and injects a hint:
 
 ```
-[vars: bash1_cmd bash1_out] — quote these as {name} placeholders in your final reply
+[vars: bash1_cmd bash1_out] — quote these as {name} placeholders in the final reply.
 ```
 
 The model is instructed to write the placeholder instead of retyping the fact. Large blobs
@@ -64,11 +64,15 @@ Measured cost: a four-way factor question where the judge put 81.9% on the corre
 abstained at TV=0.014, because the answer had already stated its conclusion.
 
 Cache cost is near zero by construction: the `SessionStart` policy and the `UserPromptSubmit`
-reminder are byte-stable per-session strings appended at the tail of the prompt, `PostToolUse`
-appends the `[vars: ...]` trailer to the newest tool result, `Stop` returns a `systemMessage`
-that is UI-only and adds no model tokens, and no hook rewrites earlier transcript bytes. The only
-extra prefill is the judge traffic: the masked twin re-prefills from scratch (masking edits the
-user turn), capped per message at `DH_TWIN_STATE_CHARS`.
+reminder are byte-stable per-session strings appended at the tail of the prompt (the policy is
+injected once per session, not again on resume), `PostToolUse` appends the `[vars: ...]` trailer
+to the newest tool result, `Stop` returns a `systemMessage` that is UI-only and adds no model
+tokens, and no hook rewrites earlier transcript bytes. The judge traffic is cache-friendly too:
+every jev frame (router, closing, ablation twin, `jev-decide`) opens with the same byte-stable
+system preamble, so consecutive judge calls reuse the engine's KV prefix; the masked twin leaves
+that preamble untouched and only redacts the evidence messages, so it reuses the real closing
+call's prefix up to the first redacted digit instead of re-prefilling from scratch (the rest is
+capped per message at `DH_TWIN_STATE_CHARS`).
 
 ### 3. Decision and news tools
 

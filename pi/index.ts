@@ -1006,31 +1006,17 @@ function verificationGuard(finalText: string, maxNOverride?: number): string | n
 const POLICY_MARKER = "## Verbatim quoting policy (de-hallucination)";
 const POLICY_QUOTING = `
 
-Every tool result is recorded as template variables, listed at its end like
-[vars: bash1_cmd bash1_out]. When your final reply mentions one of those facts, you MUST
-write the placeholder, never retype the value:
-
-- Write:  "The file at {read1_path} starts with: {read1_content}"
-- NEVER:  "The file at /work/notes.txt starts with: first line..."
-
-Compact quoting: when a large value (a whole file or command output) contains several facts
-you need, quote the variable once in its own block, then refer to the specific line or field
-by name. Never paste the same variable several times in one reply.
-
-Placeholders are replaced with the exact recorded values before the user sees your reply, so
-quoting is always byte-exact and cannot drift. Use exactly the listed variable names — never
-invent one. Braces that are not a listed variable name are left untouched, so braces inside
-code you write are safe.
-
-Scope: the rule applies ONLY to facts that have a listed variable. Anything else — your own
-reasoning, structure, commentary, and details with no variable (e.g. a link inside a larger
-{text} value you already quoted) — is written normally. Do not hesitate or re-check: pick
-the variable when one exists, write freely when it does not.
+Every tool result records its facts as template variables, listed at the result's end like
+[vars: bash1_cmd bash1_out]. When your final reply mentions such a fact, write the {name}
+placeholder, never retype the value: the reply is rendered with the exact recorded values,
+so quoting cannot drift. Use only listed names; other braces pass through untouched, so
+braces in code are safe. Quote a large variable once in its own block, then cite lines or
+fields by name. Only listed facts are quoted this way; everything else is written normally.
 `;
 const POLICY_DECIDE = `
-When you need to decide among candidate options (which fix to apply, which approach to take,
-which item is correct), call the \`jev_decide\` tool with the context and the choices: it
-returns a calibrated probability for each choice instead of you guessing.
+When you must decide among candidate options (which fix, which approach, which item), call
+the \`jev_decide\` tool with the context and the choices: it returns calibrated probabilities
+instead of you guessing.
 `;
 
 /** Policy is built from the enabled features only, so a fully-disabled extension
@@ -1171,7 +1157,7 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
         name: "news_search",
         label: "news search",
         description:
-            "Search a news archive for articles matching a query. Returns the top matches with date, headline and body. Use it for any question about news, announcements, incidents or recent events, and quote facts from the returned [vars: …] placeholders instead of retyping them.",
+            "Search a news archive for articles matching a query. Returns the top matches with date, headline and body. Use it for news, announcements, incidents or recent events; quote facts from its [vars: …] list as {name} placeholders.",
         promptSnippet: "news_search: search the news archive (local corpus, or live HN with DH_NEWS_LIVE=1).",
         parameters: {
             type: "object",
@@ -1230,7 +1216,7 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
                 return `#${k} [${h.source}] ${h.date}\n${h.title}\n${h.text.slice(0, 700)}`;
             });
             const hint = CFG.templates
-                ? `\n[vars: ${names.join(" ")}] — quote these as {name} placeholders in your final reply; they are replaced with the exact recorded values`
+                ? `\n[vars: ${names.join(" ")}] — quote these as {name} placeholders in the final reply.`
                 : "";
             return {
                 content: [{ type: "text", text: blocks.join("\n\n") + hint + degraded }],
@@ -1313,10 +1299,9 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
         if (!pairs.length) return;
         for (const [name, value] of pairs) vars.set(name, value);
         log("vars +=", pairs.map(([n]) => n).join(" "));
-        // Discovery hint: names + one short imperative. The full sentence version was
-        // heavy per-result; the bare-name version lost all placeholder compliance —
-        // this middle length kept both compliance and token overhead reasonable.
-        const hint = `[vars: ${pairs.map(([n]) => n).join(" ")}] — quote these as {name} placeholders in your final reply; they are replaced with the exact recorded values`;
+        // Discovery hint: names + one short imperative, kept identical to the Codex
+        // host. Bare names alone lost placeholder compliance; the imperative keeps it.
+        const hint = `[vars: ${pairs.map(([n]) => n).join(" ")}] — quote these as {name} placeholders in the final reply.`;
         return { content: [...event.content, { type: "text", text: hint }] };
     });
 

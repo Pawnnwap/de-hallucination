@@ -32,68 +32,53 @@ function buildPolicy() {
   if (CFG.templates) {
     body += `
 
-Every tool result is recorded as template variables, listed at its end like
-[vars: bash1_cmd bash1_out]. When your final reply mentions one of those facts, you MUST
-write the placeholder, never retype the value:
-
-- Write:  "The file at {read1_path} starts with: {read1_content}"
-- NEVER:  "The file at /work/notes.txt starts with: first line..."
-
-Compact quoting: when a large value (a whole file or command output) contains several facts
-you need, quote the variable once in its own block, then refer to the specific line or field
-by name. Never paste the same variable several times in one reply.
-
-The de-hallucination Stop hook resolves placeholders to the exact recorded values in its
-notice (and can ask you to re-emit the corrected final reply). Use exactly the listed
-variable names — never invent one. Braces that are not a listed variable name are left
-untouched, so braces inside code you write are safe.
-
-Scope: the rule applies ONLY to facts that have a listed variable. Anything else — your own
-reasoning, structure, commentary, and details with no variable — is written normally.
+Every tool result records its facts as template variables, listed at the result's end like
+[vars: bash1_cmd bash1_out]. When your final reply mentions such a fact, write the {name}
+placeholder, never retype the value: the reply is rendered with the exact recorded values,
+so quoting cannot drift. Use only listed names; other braces pass through untouched, so
+braces in code are safe. Quote a large variable once in its own block, then cite lines or
+fields by name. Only listed facts are quoted this way; everything else is written normally.
 `;
   }
   if (CFG.decide) {
     if (useMcp) {
       body += `
-When you need to decide among candidate options (which fix to apply, which approach to take,
-which item is correct), call the jev_decide MCP tool (server: dehall) with the context and
-the choices: it returns a calibrated probability for each choice instead of you guessing.
+When you must decide among candidate options (which fix, which approach, which item), call
+the jev_decide MCP tool (server: dehall) with the context and the choices: it returns
+calibrated probabilities instead of you guessing.
 `;
     }
     if (useCli) {
       body += `
-When you need a calibrated decision among candidate options, run this with the shell instead
-of guessing:
+When you must decide among candidate options (which fix, which approach, which item), run
+this with the shell instead of guessing:
 
   ${CLI_DECIDE}
 
-Repeat --choice for every candidate (2..255). The command prints the chosen key, every
-choice's probability, and a confidence.
+Repeat --choice per candidate (2..255). It prints the chosen key, each probability, and a
+confidence.
 `;
     }
   }
   if (useMcp) {
     body += `
-For any question about news, announcements, incidents or recent events, call the news_search
-MCP tool (server: dehall). Quote facts from the returned [vars: …] placeholders instead of
-retyping them.
+For news, announcements, incidents or recent events, call the news_search MCP tool (server:
+dehall) and quote facts from its [vars: …] list as {name} placeholders.
 `;
   }
   if (useCli) {
     body += `
-For any question about news, announcements, incidents or recent events, run this with the
-shell (add --hours 24 for time-sorted recent headlines):
+For news, announcements, incidents or recent events, run (add --hours 24 for recent
+headlines):
 
   ${CLI_NEWS}
 
-Replace the ALL-CAPS placeholders with the actual values. It prints the matching articles
-and a [vars: …] list; quote those facts as {placeholders} instead of retyping them.
+It prints the matching articles and a [vars: …] list; quote those facts as {name} placeholders.
 `;
   }
   if (CFG.toolsMode === "both") {
     body += `
-If the MCP tools are not in your tool list (some third-party Responses providers hide
-namespace tools), use the CLI commands above — they return the same records.
+If the MCP tools are missing from your tool list, use the CLI commands above — same records.
 `;
   }
   return body ? POLICY_MARKER + body : "";
@@ -101,18 +86,18 @@ namespace tools), use the CLI commands above — they return the same records.
 
 function turnReminder() {
   const parts = [];
-  if (CFG.templates) parts.push("quote recorded facts as {var} placeholders instead of retyping them");
+  if (CFG.templates) parts.push("quote recorded facts as {name} placeholders");
   if (CFG.decide) {
     parts.push(
-      useMcp && !useCli ? "use jev_decide for decisions" : "use the dehall jev-decide CLI for decisions",
+      useMcp && !useCli ? "use jev_decide for decisions" : "use the dehall CLI for decisions",
     );
   }
   parts.push(
     useMcp && !useCli
-      ? "use news_search for news questions"
-      : `dehall CLI: ${CLI_PATH} (news-search / jev-decide)`,
+      ? "news_search for news"
+      : `dehall CLI: ${CLI_PATH} (jev-decide / news-search)`,
   );
-  if (CFG.toolsMode === "both") parts.push("MCP tools may be hidden on this provider; the CLI is the fallback");
+  if (CFG.toolsMode === "both") parts.push("MCP may be hidden here; the CLI is the fallback");
   return `[de-hallucination] ${parts.join("; ")}.`;
 }
 
@@ -123,10 +108,15 @@ function additional(event, text) {
 
 async function onSessionStart(input) {
   cleanupOldStates();
+  let firstTime = true;
   withState(input.session_id, (state) => {
     if (!state.turn) resetTurn(state, input.turn_id || "", "");
+    // Codex re-fires SessionStart on resume and keeps the earlier policy message in the
+    // history, so re-injecting would stack duplicate policy blocks in the model context.
+    firstTime = !state.policyInjected;
+    state.policyInjected = true;
   });
-  return additional("SessionStart", buildPolicy());
+  return firstTime ? additional("SessionStart", buildPolicy()) : {};
 }
 
 async function onUserPromptSubmit(input) {

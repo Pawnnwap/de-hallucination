@@ -38,7 +38,7 @@ run_pi() { # run_pi <label> <prompt>  (the local 4B occasionally burns its whole
   for i in 1 2; do
     mkdir -p "$WORK/$label"
     [ "$i" = 2 ] && { echo "  (length-flake on attempt 1, retrying)"; rm -f "$WORK/$label"/*.jsonl; }
-    DH_DEBUG=1 pi --extension ./index.ts --model "$MODEL" \
+    DH_DEBUG=1 pi -ne --extension ./index.ts --model "$MODEL" \
       -p --session-dir "$WORK/$label" "$1" < /dev/null 2>"$WORK/$label/stderr.log"
     flaked "$label" || break
   done
@@ -106,7 +106,7 @@ else echo "PASS: no unresolved placeholders leak"; PASS=$((PASS+1)); fi
 
 note "5. fail-open with jev down"
 mkdir -p "$WORK/dead"
-DH_DEBUG=1 DH_JEV_URL=http://127.0.0.1:8099 pi --extension ./index.ts \
+DH_DEBUG=1 DH_JEV_URL=http://127.0.0.1:8099 pi -ne --extension ./index.ts \
   --model "$MODEL" -p --session-dir "$WORK/dead" \
   "Is 7 a prime number? Answer with yes or no." < /dev/null 2>"$WORK/dead/stderr.log"
 check "failed open to chat"       "failing open to chat"      "$WORK/dead/stderr.log"
