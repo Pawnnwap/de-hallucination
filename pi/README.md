@@ -120,6 +120,27 @@ PI_MODEL="openrouter/xingchen-agi/xing4.0-29b-a4b:free" bash pi/bench/bench.sh 3
 Headless runs from a non-TTY context must redirect stdin (`< /dev/null`): pi's `-p` mode
 reads stdin when it is not a terminal and otherwise blocks with no output.
 
+### Closing-round gates
+
+A sharp distribution is only worth publishing if the judge read the evidence, so every closing
+verdict passes two gates. One failure publishes `**JEV closing decision: ABSTAINED**` with the
+distribution instead of a confident number:
+
+- **Flatness floor.** Binary: abstain when `|p - 0.5| < DH_ABSTAIN_MARGIN`. Choice/score: use
+  the service's entropy-based `confidence` when present (`< DH_ABSTAIN_CONF`), else a top-p
+  mass floor (`< DH_ABSTAIN_TOPP`). The same floor protects the router: a flat classification
+  keeps `chat` rather than forcing a format onto the answer.
+- **Evidence-ablation twin.** The same frame is re-run with every number in the user request
+  masked to `[#]`. If the answer distribution barely moves (total-variation distance
+  `< DH_ABLATION_DELTA`), the verdict was reading the answer's own prose and not the evidence,
+  so it abstains. Skipped when the request has no numbers to mask.
+
+Measured on a four-way factor question, the judge put 81.9% on the correct option and the
+masked twin moved by TV=0.014, so the verdict abstained: an answer that states its conclusion
+spoils its own twin. The defaults are deliberately conservative. Lower `DH_ABLATION_DELTA`
+(set `DH_DISABLE_ABLATION=1` to disable the gate entirely) to publish more verdicts; raise the
+floors to publish fewer. Thresholds are eyeballed off a handful of probes, not fitted.
+
 ### Configuration
 
 | var | default | meaning |
@@ -134,6 +155,11 @@ reads stdin when it is not a terminal and otherwise blocks with no output.
 | `DH_SPARK_MAX_OUT` | `6144` | max output tokens |
 | `DH_SPARK_THINK` | on | `=0` disables native thinking (faster, measured sloppier on a 4B) |
 | `DH_MAX_VAR_CHARS` | `8192` | per-variable value cap |
+| `DH_ABSTAIN_MARGIN` | `0.10` | binary flatness floor: minimum `\|p-0.5\|` to publish a verdict |
+| `DH_ABSTAIN_CONF` | `0.15` | choice/score flatness floor: minimum service-reported `confidence` |
+| `DH_ABSTAIN_TOPP` | `0.45` | fallback top-p mass floor; also gates the router (flat classification stays `chat`) |
+| `DH_ABLATION_DELTA` | `0.15` | minimum total-variation distance between the real and number-masked verdict distributions |
+| `DH_DISABLE_ABLATION` | off | `=1` skips the evidence-ablation twin (publishes verdicts the twin would veto) |
 | `DH_DISABLE_ROUTER/_TEMPLATES/_CLOSER/_CHECKER/_DECIDE` | off | `=1` disables one mechanism (all five = stock pi) |
 | `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
 
@@ -190,6 +216,15 @@ vs a bare answer, byte-exact quoting with substitution provenance vs retyping, a
 - The choice closer trusts a regex extractor (2–6 short items); otherwise `/auto` generates
   candidates with the same local model. The checker validates payloads, not prose, and for
   code only checks fence balance — it does not compile or lint.
+- **Choice extractor is a regex:** widest candidate window over `,` `:` `(` `;`, plus
+  colon-introduced lists and `;`/spaced-dash items; 2-6 items survive. Longer lists truncate to
+  the last six, the text before the first delimiter counts as prose ("Run it with npm, pnpm,
+  yarn, bun or deno" loses `npm`), and a fragment led by a determiner or relative pronoun
+  (" - the one that failed monotonicity") counts as commentary, not an option.
+- **The ablation twin can be spoiled:** when the answer states its own conclusion, masking the
+  numbers in the request barely moves the distribution, so a correct and confident verdict
+  abstains (measured: 81.9% on the right option at TV=0.014). Gate thresholds are eyeballed off
+  a handful of probes, not fitted.
 - jev is text-only and calibrated on single-token answers; option wording materially affects
   routing/decision quality.
 

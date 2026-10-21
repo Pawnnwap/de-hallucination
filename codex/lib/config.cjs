@@ -19,6 +19,19 @@ function int(name, fallback) {
   return n;
 }
 
+function num(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    if (process.env.DH_DEBUG === "1") {
+      console.error(`[dehall] ${name}="${raw}" is not a valid number - using ${fallback}`);
+    }
+    return fallback;
+  }
+  return n;
+}
+
 const renderModeRaw = env("DH_CODEX_RENDER", "notice").toLowerCase();
 const renderMode = ["notice", "block", "off"].includes(renderModeRaw) ? renderModeRaw : "notice";
 const toolsModeRaw = env("DH_CODEX_TOOLS", "cli").toLowerCase();
@@ -42,6 +55,11 @@ const CFG = {
   renderMode,
   toolsMode,
   checkRetries: Math.max(0, Math.min(2, int("DH_CODEX_CHECK_RETRIES", 1))),
+  abstainMargin: num("DH_ABSTAIN_MARGIN", 0.10),
+  abstainTopP: num("DH_ABSTAIN_TOPP", 0.45),
+  ablationDelta: num("DH_ABLATION_DELTA", 0.15),
+  abstainConf: num("DH_ABSTAIN_CONF", 0.15),
+  ablation: !flag("DH_DISABLE_ABLATION"),
   debug: flag("DH_DEBUG"),
 };
 
@@ -49,4 +67,4 @@ const log = (...args) => {
   if (CFG.debug) console.error("[dehall]", ...args);
 };
 
-module.exports = { CFG, log, int, env, flag };
+module.exports = { CFG, log, int, num, env, flag };

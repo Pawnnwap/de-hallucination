@@ -140,6 +140,49 @@
         check("options: extracts python,bash", keys === "python,bash", keys);
     }
 
+    // 4-item and colon lists
+    {
+        const r = I.extractOptions("Which candidate failed: jiban_factor, min_lot_ratio_ts_demean40, peak_ratio_diff or sqw_rangemed_40?");
+        check("options: four-item list keeps all four labels",
+            !!r && r.length === 4 && r[0].key === "jiban_factor" && r[3].key === "sqw_rangemed_40", (r || []).map((o) => o.key).join(","));
+        const c = I.extractOptions("Pick one: Python, Bash, Julia, R.");
+        check("options: colon list with no 'or'", !!c && c.map((o) => o.key).join(",") === "python,bash,julia,r", (c || []).map((o) => o.key).join(","));
+        check("options: prose with no list stays null", I.extractOptions("Is the file longer than 100 lines?") === null);
+        const lv = I.extractOptions("Recorded scan: jiban_factor Spearman -0.989 with 3/19 rising; min_lot +0.992. Pick exactly one of: jiban_factor, min_lot_ratio_ts_demean40, peak_ratio_diff, sqw_rangemed_40 - the one that failed monotonicity.");
+        check("options: live form with a trailing clause keeps 4 labels",
+            !!lv && lv.length === 4 && lv[3].key === "sqw_rangemed_40", (lv || []).map((o) => o.key).join(","));
+        const sm = I.extractOptions("Choose an engine: vllm; llama.cpp; transformers.");
+        check("options: semicolon list", !!sm && sm.map((o) => o.key).join(",") === "vllm,llama.cpp,transformers", (sm || []).map((o) => o.key).join(","));
+    }
+
+    // gates: floors, ablation twin, abstain line
+    {
+        const m = I.maskEvidence("Spearman -0.989, 3/19 rising, 42% of 100");
+        check("gates: mask redacts numbers, keeps punctuation", m === "Spearman -[#], [#] rising, [#]% of [#]", JSON.stringify(m));
+        check("gates: topProb reads the sharpest cell", I.topProb({ a: 0.31, b: 0.44 }) === 0.44);
+        check("gates: flat binary is floored", /below/.test(I.floorReason("binary", { noul: 0.52 })));
+        check("gates: sharp binary passes", I.floorReason("binary", { noul: 0.62 }) === "");
+        const flat = { probabilities: { x: 0.315, y: 0.276, z: 0.23, w: 0.179 } };
+        check("gates: flat choice is floored", /top-p/.test(I.floorReason("choice", flat)));
+        check("gates: sharp choice passes", I.floorReason("choice", { probabilities: { x: 0.674, y: 0.22, z: 0.106 } }) === "");
+        check("gates: abstain line carries the distribution",
+            /ABSTAINED/.test(I.abstainLine("binary", "x", { noul: 0.52 })) && /52.0%/.test(I.abstainLine("binary", "x", { noul: 0.52 })));
+        const tv = I.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
+        check("gates: tvDistance is symmetric", Math.abs(tv - 0.4) < 1e-9, String(tv));
+        const sharp = await I.gateVerdict("choice", { probabilities: { a: 0.533, b: 0.467 } },
+            async () => I.tvDistance({ a: 0.533, b: 0.467 }, { a: 0.9, b: 0.1 }));
+        check("gates: masked run getting sharper is evidence-bound, not abstained", sharp === null, String(sharp));
+        const pub = await I.gateVerdict("binary", { noul: 0.91 }, async () => 0.42);
+        check("gates: sharp evidence-bound verdict publishes", pub === null, String(pub));
+        const ab = await I.gateVerdict("binary", { noul: 0.62 }, async () => 0.03);
+        check("gates: low evidence-sensitivity abstains", !!ab && /evidence-sensitivity/.test(ab), String(ab));
+        const fb = await I.gateVerdict("choice", flat, async () => 0.4);
+        check("gates: floor beats ablation", !!fb && /top-p/.test(fb), String(fb));
+        check("gates: no numbers to mask skips ablation",
+            (await I.gateVerdict("binary", { noul: 0.62 }, async () => null)) === null);
+        check("gates: num() falls back on malformed env", (() => { process.env.DH_ABSTAIN_TOPP = "abc"; const v = I.num("DH_ABSTAIN_TOPP", 0.45); delete process.env.DH_ABSTAIN_TOPP; return v === 0.45; })());
+    }
+
     console.log(`\n===== units: ${pass} passed, ${fail} failed =====`);
     process.exit(fail ? 1 : 0);
 })().catch((e) => {

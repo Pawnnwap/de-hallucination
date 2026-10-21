@@ -25,6 +25,7 @@ function check(name, fn) {
   try {
     const r = fn();
     if (r && typeof r.then === "function") throw new Error("check() received a promise");
+    if (r === false) throw new Error("check() returned false");
     pass++;
     console.log(`PASS: ${name}`);
   } catch (e) {
@@ -443,6 +444,70 @@ const hook = (event, env = {}) =>
     } finally {
       child.kill();
     }
+  });
+
+
+  const gates = require("../lib/jev.cjs");
+  check("maskEvidence redacts numbers and keeps prose", () => {
+    assert.equal(gates.maskEvidence("Spearman -0.989, 3/19 rising"), "Spearman -[#], [#] rising");
+    assert.equal(gates.maskEvidence("levels 1,2,3 and 42%"), "levels [#] and [#]%");
+    assert.equal(gates.maskEvidence("no digits here"), "no digits here");
+  });
+  check("topProb reads the sharpest cell", () => {
+    assert.equal(gates.topProb({ a: 0.31, b: 0.44, c: 0.25 }).toFixed(2), "0.44");
+    assert.equal(gates.topProb({}), 0);
+  });
+  check("floorReason gates a flat binary", () => {
+    assert.match(gates.floorReason("binary", { noul: 0.52 }), /below/);
+    assert.equal(gates.floorReason("binary", { noul: 0.62 }), "");
+  });
+  check("floorReason gates a flat choice", () => {
+    assert.match(gates.floorReason("choice", { probabilities: { x: 0.315, y: 0.276, z: 0.23, w: 0.179 } }), /top-p/);
+    assert.equal(gates.floorReason("choice", { probabilities: { x: 0.674, y: 0.22, z: 0.106 } }), "");
+  });
+  check("abstainLine says ABSTAINED and shows the distribution", () => {
+    const t = gates.abstainLine("binary", "|p-0.5|=0.020 below 0.1", { noul: 0.52 });
+    assert.match(t, /ABSTAINED/);
+    assert.match(t, /yes 52\.0%/);
+  });
+  check("options: four-item list keeps all four labels", () => {
+    const r = extractOptions("Which candidate failed: jiban_factor, min_lot_ratio_ts_demean40, peak_ratio_diff or sqw_rangemed_40?");
+    return !!r && r.length === 4 && r[0].key === "jiban_factor" && r[3].key === "sqw_rangemed_40";
+  });
+  check("options: colon list with no 'or'", () => {
+    const r = extractOptions("Pick one: Python, Bash, Julia, R.");
+    return !!r && r.map((o) => o.key).join(",") === "python,bash,julia,r";
+  });
+  check("options: prose with no list stays null", () => extractOptions("Is the file longer than 100 lines?") === null);
+  check("options: live form with a trailing clause keeps 4 labels", () => {
+    const r = extractOptions("Recorded scan: jiban_factor Spearman -0.989 with 3/19 rising; min_lot +0.992. Pick exactly one of: jiban_factor, min_lot_ratio_ts_demean40, peak_ratio_diff, sqw_rangemed_40 - the one that failed monotonicity.");
+    return !!r && r.length === 4 && r[3].key === "sqw_rangemed_40";
+  });
+  check("options: semicolon list", () => {
+    const r = extractOptions("Choose an engine: vllm; llama.cpp; transformers.");
+    return !!r && r.map((o) => o.key).join(",") === "vllm,llama.cpp,transformers";
+  });
+  check("tvDistance is symmetric and bounded", () => {
+    const d = gates.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
+    return Math.abs(d - 0.4) < 1e-9 && gates.tvDistance({ a: 1 }, { a: 1 }) === 0;
+  });
+  await checkAsync("gateVerdict publishes a sharp, evidence-bound verdict", async () => {
+    const g = await gates.gateVerdict("binary", { noul: 0.91 }, async () => 0.42);
+    assert.equal(g, null);
+  });
+  await checkAsync("gateVerdict abstains when the masked twin barely moves", async () => {
+    const g = await gates.gateVerdict("binary", { noul: 0.62 }, async () => 0.03);
+    assert.match(g, /ABSTAINED/);
+    assert.match(g, /evidence-sensitivity/);
+  });
+  await checkAsync("gateVerdict floor beats ablation", async () => {
+    const g = await gates.gateVerdict("choice", { probabilities: { a: 0.315, b: 0.276, c: 0.22, d: 0.189 } }, async () => 0.40);
+    assert.match(g, /ABSTAINED/);
+    assert.match(g, /top-p/);
+  });
+  await checkAsync("gateVerdict skips ablation when there are no numbers to mask", async () => {
+    const g = await gates.gateVerdict("binary", { noul: 0.62 }, async () => null);
+    assert.equal(g, null);
   });
 
   fs.rmSync(stateDir, { recursive: true, force: true });

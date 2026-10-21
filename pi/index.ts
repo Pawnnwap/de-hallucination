@@ -74,6 +74,26 @@ function int(name: string, fallback: number): number {
     }
     return n;
 }
+/**
+ * Parse a float env var (gate thresholds). Malformed values fall back like int() does:
+ * a NaN threshold would silently disable a gate and publish noise verdicts.
+ */
+function num(name: string, fallback: number): number {
+    const v = process.env[name];
+    if (!v) return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+        if (!warnedBadEnv.has(name)) {
+            warnedBadEnv.add(name);
+            if (process.env.DH_DEBUG === "1") {
+                console.error(`[dehall] ${name}="${v}" is not a valid number - using fallback ${fallback}`);
+            }
+        }
+        return fallback;
+    }
+    return n;
+}
+
 const CFG = {
     jevUrl: env("DH_JEV_URL", "http://127.0.0.1:8090").replace(/\/+$/, ""),
     jevTimeoutMs: int("DH_JEV_TIMEOUT_MS", 20000),
@@ -95,6 +115,11 @@ const CFG = {
     closer: !flag("DH_DISABLE_CLOSER"),
     checker: !flag("DH_DISABLE_CHECKER"),
     decide: !flag("DH_DISABLE_DECIDE"),
+    abstainMargin: num("DH_ABSTAIN_MARGIN", 0.10),
+    abstainTopP: num("DH_ABSTAIN_TOPP", 0.45),
+    ablationDelta: num("DH_ABLATION_DELTA", 0.15),
+    abstainConf: num("DH_ABSTAIN_CONF", 0.15),
+    ablation: !flag("DH_DISABLE_ABLATION"),
     debug: flag("DH_DEBUG"),
 };
 const log = (...args: unknown[]): void => {
@@ -407,6 +432,10 @@ async function routeFormat(prompt: string): Promise<OutputFormat> {
     }, CFG.jevTimeoutMs);
     const a = r.answers.fmt;
     log("router:", a.choice, fmtProbs(a.probabilities));
+    if (CFG.abstainTopP > 0 && topProb(a.probabilities) < CFG.abstainTopP) {
+        log("router: flat distribution, keeping chat");
+        return "chat";
+    }
     return (a.choice in FORMAT_OPTIONS ? a.choice : "chat") as OutputFormat;
 }
 
@@ -517,41 +546,174 @@ const slug = (s: string): string =>
  * nothing convincing is found (caller falls back to /auto generation).
  */
 function extractOptions(prompt: string): JevChoice[] | null {
-    const orIdx = prompt.search(/\s+(?:or|vs\.?|versus)\s+/i);
-    if (orIdx === -1) return null;
-    // Window: from the last list separator before "or" to the first sentence ender after it.
-    const before = prompt.slice(0, orIdx);
-    const after = prompt.slice(orIdx).replace(/^\s+(?:or|vs\.?|versus)\s+/i, "");
-    const start = Math.max(
-        before.lastIndexOf(","),
-        before.lastIndexOf(":"),
-        before.lastIndexOf("("),
-        before.lastIndexOf(";"),
-    ) + 1;
-    const endMatch = after.match(/[?.,;:!)]/);
-    const end = endMatch ? after.indexOf(endMatch[0]) : after.length;
-    const window = `${before.slice(start)} or ${after.slice(0, end)}`;
-    const items = window
-        .split(/,|\s+(?:or|and|vs\.?|versus)\s+/i)
+    const splitItems = (window: string) => window
+        .split(/[,;]|\s+(?:or|and|vs\.?|versus)\s+|\s+[-\u2013\u2014]\s+/i)
         .map((s) => s.trim().replace(/^["'`]+|["'`?.,;:]+$/g, "").trim())
         .filter(Boolean);
-    const seen = new Set<string>();
-    const choices: JevChoice[] = [];
-    for (const raw of items) {
-        // Drop purpose clauses ("MongoDB for my app" -> "MongoDB"), strip
-        // leading/trailing stopwords ("Should I use SQLite" -> "SQLite").
-        const item = raw.split(/\s+(?:for|to)\s+/i)[0];
-        const words = item.split(/\s+/);
-        while (words.length && STOPWORDS.has(words[0].toLowerCase())) words.shift();
-        while (words.length && STOPWORDS.has(words[words.length - 1].toLowerCase())) words.pop();
-        if (words.length === 0 || words.length > 4) continue;
-        const cleaned = words.join(" ");
-        const key = slug(cleaned);
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        choices.push({ key, description: cleaned });
+
+    const toChoices = (items: string[]) => {
+        const seen = new Set();
+        const choices: any[] = [];
+        for (const raw of items) {
+            const item = raw.split(/\s+(?:for|to)\s+/i)[0];
+            // Fragments led by a determiner/relative pronoun are trailing
+            // commentary (" - the one that failed monotonicity"), not labels.
+            if (/^(?:the|this|that|these|those|which|who|whom|whose|and|but|so|then|because|if|when)\b/i.test(item)) continue;
+            const words = item.split(/\s+/);
+            while (words.length && STOPWORDS.has(words[0].toLowerCase())) words.shift();
+            while (words.length && STOPWORDS.has(words[words.length - 1].toLowerCase())) words.pop();
+            if (words.length === 0 || words.length > 4) continue;
+            const cleaned = words.join(" ");
+            const key = slug(cleaned);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            choices.push({ key, description: cleaned });
+        }
+        return choices.length >= 2 && choices.length <= 6 ? choices : null;
+    };
+
+    // Widest window first: taking the LAST delimiter before "or" truncated
+    // "A, B, C or D?" to "C or D", so a four-way question was judged as a coin flip.
+    const windows: string[] = [];
+    const push = (text: string) => {
+        if (text && text.trim().length > 2 && !windows.includes(text)) windows.push(text);
+    };
+    const orRe = /\s+(?:or|vs\.?|versus)\s+/i;
+    const orIdx = prompt.search(orRe);
+    if (orIdx !== -1) {
+        const before = prompt.slice(0, orIdx);
+        const after = prompt.slice(orIdx).replace(orRe, "");
+        const endMatch = after.match(/[?.,;:!)]/);
+        const tail2 = after.slice(0, endMatch ? after.indexOf(endMatch[0]) : Math.min(after.length, 60));
+        const pos: number[] = [];
+        for (const d of [",", ":", "(", ";"]) {
+            let i = before.indexOf(d);
+            while (i !== -1) { pos.push(i); i = before.indexOf(d, i + 1); }
+        }
+        pos.sort((a, b) => a - b);
+        for (const at of pos) {
+            const span = before.slice(at + 1);
+            if (span.length > 300 || (span.match(/,/g) || []).length > 8) continue;
+            push(span + " or " + tail2);
+        }
+        const last = Math.max(before.lastIndexOf(","), before.lastIndexOf(":"), before.lastIndexOf("("), before.lastIndexOf(";")) + 1;
+        push(before.slice(last) + " or " + tail2);
     }
-    return choices.length >= 2 && choices.length <= 6 ? choices : null;
+    // Lists introduced by a colon with no "or" at all: "Pick one: A, B, C, D."
+    const colonIdx = [
+    ...prompt.matchAll(/[:\uFF1A]/g)
+    ].map((m) => m.index).reverse();
+    for (const cl of colonIdx) {
+    if (!/\s/.test(prompt[cl + 1] || "")) continue;
+    const seg = prompt.slice(cl + 1).split(/\s*(?:[?!]|\.(?=\s|$)|\n)/)[0];
+    if (seg.length <= 300 && (seg.match(/[,;]/g) || []).length >= 1) push(seg);
+    }
+    for (const w of windows) {
+        const c = toChoices(splitItems(w));
+        if (c) return c;
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Evidence gates: publish a verdict only when it is sharp AND it moved with its
+// evidence. Measured on the 0.8B judge: masking the numbers in the state collapses
+// the answer spread from 0.68 to 0.006, so a verdict that ignores the mask is a
+// prior about the topic, not a reading of the evidence. Floors catch the flat
+// distributions (a forced pick on a "nothing qualifies" case sat at top-p 0.315).
+// ---------------------------------------------------------------------------
+
+function maskEvidence(text: string): string {
+    return String(text).replace(/\d[\d.,:%_/-]*\d|\d/g, "[#]");
+}
+
+/**
+ * Total-variation distance between two answer distributions. Symmetric on purpose: the
+ * signed top-p difference punished a masked run that got *sharper* on label priors, which
+ * is exactly what the gate exists to catch, so it abstained on evidence-bound verdicts.
+ */
+function tvDistance(a: Record<string, number>, b: Record<string, number>): number {
+    const pa = a || {};
+    const pb = b || {};
+    const keys = new Set([...Object.keys(pa), ...Object.keys(pb)]);
+    let d = 0;
+    for (const k of keys) d += Math.abs(Number(pa[k] || 0) - Number(pb[k] || 0));
+    return d / 2;
+}
+
+function topProb(probs: Record<string, number> | undefined): number {
+    const vals = Object.values(probs || {}).map(Number).filter(Number.isFinite);
+    return vals.length ? Math.max(...vals) : 0;
+}
+
+function distLine(ans: any): string {
+    const p = ans && ans.probabilities;
+    if (p && Object.keys(p).length) {
+        return Object.entries(p as Record<string, number>)
+            .sort((x, y) => y[1] - x[1])
+            .slice(0, 3)
+            .map(([k, v]) => `${k}: ${(v * 100).toFixed(1)}%`)
+            .join("  ·  ");
+    }
+    const n = Number(ans && ans.noul);
+    return Number.isFinite(n)
+        ? `yes: ${(n * 100).toFixed(1)}%` + "  ·  " + `no: ${((1 - n) * 100).toFixed(1)}%`
+        : "no distribution";
+}
+
+function floorReason(kind: string, ans: any): string {
+    if (CFG.abstainTopP <= 0 && CFG.abstainMargin <= 0) return "";
+    if (kind === "binary") {
+        const p = Number(ans && ans.noul);
+        if (!Number.isFinite(p)) return "no probability";
+        const m = Math.abs(p - 0.5);
+        return m >= CFG.abstainMargin ? "" : `|p-0.5|=${m.toFixed(3)} below ${CFG.abstainMargin}`;
+    }
+    const conf = Number(ans && ans.confidence);
+    if (Number.isFinite(conf)) {
+      return conf >= CFG.abstainConf ? "" : `confidence=${conf.toFixed(2)} below ${CFG.abstainConf}`;
+    }
+    const tp = topProb(ans && ans.probabilities);
+    return tp >= CFG.abstainTopP ? "" : `top-p=${tp.toFixed(3)} below ${CFG.abstainTopP}`;
+}
+
+function abstainLine(kind: string, why: string, ans: any): string {
+    log("closer: abstaining:", kind, why);
+    return `\n\n---\n**JEV closing decision: ABSTAINED** (${kind}, ${why})\n- ${distLine(ans)}`;
+}
+
+async function evidenceDelta(
+    state: any, questions: any, kind: string, ans: any, timeoutMs: number,
+): Promise<number | null> {
+    const msgs = (Array.isArray(state) ? state : [{ role: "user", content: String(state) }]).map((m: any) => ({
+        ...m,
+        content: maskEvidence(m.content),
+    }));
+    if (JSON.stringify(msgs) === JSON.stringify(state)) return null;
+    const r = await jevPost("/v1/systemone", { state: msgs, questions }, timeoutMs);
+    const twin = r.answers && r.answers[Object.keys(questions)[0]];
+    if (!twin) return null;
+    return kind === "binary"
+        ? Math.abs(Number(ans.noul) - Number(twin.noul))
+        : tvDistance(ans.probabilities, twin.probabilities);
+}
+
+async function gateVerdict(kind: string, ans: any, twinFn?: () => Promise<number | null>): Promise<string | null> {
+    const floor = floorReason(kind, ans);
+    if (floor) return abstainLine(kind, floor, ans);
+    if (!CFG.ablation || !twinFn) return null;
+    let d: number | null = null;
+    try {
+        d = await twinFn();
+    } catch (e) {
+        if (e instanceof JevUnavailable) throw e;
+        log("ablation twin failed:", String(e));
+    }
+    if (d === null) return null;
+    if (d < CFG.ablationDelta) {
+        return abstainLine(kind, `evidence-sensitivity TV=${d.toFixed(3)} below ${CFG.ablationDelta}`, ans);
+    }
+    return null;
 }
 
 async function closingRound(prompt: string, lastOutput: string): Promise<string | null> {
@@ -562,39 +724,43 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
     const fmt = runState.format;
     try {
         if (fmt === "binary") {
-            const r = await jevPost("/v1/systemone", {
-                state,
-                questions: {
+            const questions = {
                     verdict: {
                         type: "noul",
                         instructions:
                             "Based on the assistant's analysis, is the correct final answer to the user's question yes/true/affirmative?",
                     },
-                },
-            }, CFG.jevTimeoutMs * 3);
+                };
+            const r = await jevPost("/v1/systemone", { state, questions }, CFG.jevTimeoutMs * 3);
             const p: number = Number(r.answers.verdict.noul);
             if (!Number.isFinite(p)) {
                 log("closer: jev returned no noul probability — skipping verdict");
                 return null;
             }
+            const gate = await gateVerdict("binary", r.answers.verdict, () =>
+                evidenceDelta(state, questions, "binary", r.answers.verdict, CFG.jevTimeoutMs * 3),
+            );
+            if (gate) return gate;
             return [
                 `\n\n---\n**JEV closing decision: ${p >= 0.5 ? "YES" : "NO"}** (p=${p.toFixed(3)})`,
                 `- yes: ${(p * 100).toFixed(1)}%  ·  no: ${((1 - p) * 100).toFixed(1)}%`,
             ].join("\n");
         }
         if (fmt === "score") {
-            const r = await jevPost("/v1/systemone", {
-                state,
-                questions: {
+            const questions = {
                     verdict: {
                         type: "score",
                         instructions:
                             "What rating is the correct final answer to the user's request, given the assistant's analysis?",
                         criteria: ["1 — lowest", "2 — low", "3 — medium", "4 — high", "5 — highest"],
                     },
-                },
-            }, CFG.jevTimeoutMs * 3);
+                };
+            const r = await jevPost("/v1/systemone", { state, questions }, CFG.jevTimeoutMs * 3);
             const a = r.answers.verdict;
+            const gate = await gateVerdict("score", a, () =>
+                evidenceDelta(state, questions, "score", a, CFG.jevTimeoutMs * 3),
+            );
+            if (gate) return gate;
             const sc = Number(a.score);
             if (!Number.isFinite(sc)) {
                 log("closer: jev returned no score — skipping verdict");
@@ -612,13 +778,18 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
         const extracted = extractOptions(prompt);
         if (extracted) {
             log("closer: using extracted options", extracted.map((c) => c.key).join("/"));
-            const d = await jevDecide(
-                [
+const decideCtx = [
                     `User request:\n"""\n${prompt.slice(0, 6000)}\n"""`,
                     `Assistant's final answer and analysis:\n"""\n${lastOutput.slice(0, 12000)}\n"""`,
-                ].join("\n\n"),
-                extracted,
-            );
+                ].join("\n\n");
+            const d = await jevDecide(decideCtx, extracted);
+            const gate = await gateVerdict("choice", d, async () => {
+                const masked = maskEvidence(decideCtx);
+                if (masked === decideCtx) return null;
+                const t = await jevDecide(masked, extracted);
+                return tvDistance(d.probabilities, t.probabilities);
+            });
+            if (gate) return gate;
             const dist = Object.entries(d.probabilities)
                 .sort((x, y) => y[1] - x[1])
                 .slice(0, 3)
@@ -644,13 +815,18 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
                 },
             }, Math.max(CFG.jevTimeoutMs * 3, 60000));
         } catch (e) {
-            if (e instanceof JevUnavailable && /\b404\b/.test(e.message)) {
+            // A service without /auto answers 404; a service whose generator degenerated (a small
+            // engine producing no parsable option list) answers 422. Both mean "no verdict
+            // available from this endpoint", not "jev is down": degrade, do not trip jevDown.
+            if (e instanceof JevUnavailable && /\b(404|422)\b|usable options/i.test(e.message)) {
                 log("closer: this jev service has no /auto endpoint — skipping verdict");
                 return null;
             }
             throw e;
         }
         const a = r.answers.verdict;
+        const gateAuto = floorReason("auto", a);
+        if (gateAuto) return abstainLine("auto", gateAuto, a);
         const gen = a.generated_options as Record<string, string>;
         const dist = Object.entries(a.probabilities as Record<string, number>)
             .sort((x, y) => y[1] - x[1])
@@ -871,6 +1047,13 @@ export const __internals = {
     renderTemplates,
     vars,
     int,
+    num,
+    maskEvidence,
+    topProb,
+    floorReason,
+    tvDistance,
+    abstainLine,
+    gateVerdict,
 };
 
 export default async function dehallucination(pi: ExtensionAPI): Promise<void> {

@@ -53,6 +53,16 @@ breaks the payload), it blocks the stop once with a precise correction prompt; t
 re-emits, and the next `Stop` accepts the corrected payload. Formatting only — facts never
 change.
 
+Closing verdicts pass two gates before they are posted. **Flatness floor**: binary abstains
+under `|p-0.5| < DH_ABSTAIN_MARGIN`; choice/score use the service's `confidence`
+(`< DH_ABSTAIN_CONF`) or a top-p mass floor (`< DH_ABSTAIN_TOPP`), and a flat router result
+keeps `chat`. **Evidence-ablation twin**: the frame is re-run with every number in the request
+masked to `[#]`; if the two distributions differ by less than `DH_ABLATION_DELTA`
+(total variation), the verdict came from the answer's own prose, not the evidence. A verdict
+that fails either gate posts `**JEV closing decision: ABSTAINED**` with the distribution.
+Measured cost: a four-way factor question where the judge put 81.9% on the correct option
+abstained at TV=0.014, because the answer had already stated its conclusion.
+
 ### 3. Decision and news tools
 
 Two transports are available:
@@ -166,6 +176,11 @@ this repository does not ship one. The hooks, CLI and news search do not need it
 | `DH_CODEX_RENDER` | `notice` | `notice`, `block` (one corrective re-emission), or `off` |
 | `DH_CODEX_CHECK_RETRIES` | `1` | max Stop-block correction attempts for invalid deliverables (0–2) |
 | `DH_MAX_VAR_CHARS` | `8192` | per-variable value cap |
+| `DH_ABSTAIN_MARGIN` | `0.10` | binary flatness floor: minimum `\|p-0.5\|` to publish a verdict |
+| `DH_ABSTAIN_CONF` | `0.15` | choice/score flatness floor: minimum service-reported `confidence` |
+| `DH_ABSTAIN_TOPP` | `0.45` | fallback top-p mass floor; also gates the router (flat classification stays `chat`) |
+| `DH_ABLATION_DELTA` | `0.15` | minimum total-variation distance between the real and number-masked verdict distributions |
+| `DH_DISABLE_ABLATION` | off | `=1` skips the evidence-ablation twin (publishes verdicts the twin would veto) |
 | `DH_MAX_NOTICE_CHARS` | `12000` | rendered-notice cap |
 | `DH_CODEX_STATE_DIR` | `%TEMP%/dehall-codex` | hook state (vars, route, counters) |
 | `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
@@ -212,6 +227,12 @@ A successful run shows the model writing `{bash1_cmd}` / `{bash1_out}` and a sta
   provider that supports Codex's `namespace` tool type.
 - **Exit codes.** Codex hook payloads expose Bash output as a string; the guard uses error
   patterns rather than a per-command exit code.
+- **Closing gates are tuned by eye.** Floors and the ablation delta come from a handful of
+  probes; the twin is spoiled by any answer that states its own conclusion (correct 81.9%
+  verdict, TV=0.014, abstained). `DH_DISABLE_ABLATION=1` turns that gate off.
+- **Choice extractor is a regex:** 2-6 items survive; longer lists truncate to the last six,
+  the text before the first delimiter counts as prose, and a fragment led by a determiner
+  (" - the one that failed monotonicity") counts as commentary.
 - **Router is text-only.** Option wording materially affects routing quality.
 - **Headless stdin.** `codex exec` reads stdin when it is not a terminal; redirect it
   (`< /dev/null`) in scripts.
