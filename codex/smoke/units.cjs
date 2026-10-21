@@ -487,6 +487,13 @@ const hook = (event, env = {}) =>
     const r = extractOptions("Choose an engine: vllm; llama.cpp; transformers.");
     return !!r && r.map((o) => o.key).join(",") === "vllm,llama.cpp,transformers";
   });
+  check("twinFrame masks numbers then caps each message", () => {
+      const st = [{ role: "user", content: "spearman 0.989 " + "x ".repeat(2000) }, { role: "assistant", content: "pick 3" }];
+      const f = gates.twinFrame(st, 500);
+      return !!f && f.every((m) => m.content.length <= 500) && /\[#\]/.test(f[0].content) && !/0\.989/.test(f[0].content);
+    });
+    check("twinFrame returns null when there is nothing to ablate", () =>
+      gates.twinFrame([{ role: "user", content: "no digits in this request at all" }], 4000) === null);
   check("tvDistance is symmetric and bounded", () => {
     const d = gates.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
     return Math.abs(d - 0.4) < 1e-9 && gates.tvDistance({ a: 1 }, { a: 1 }) === 0;

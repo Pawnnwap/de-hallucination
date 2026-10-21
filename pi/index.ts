@@ -120,6 +120,7 @@ const CFG = {
     ablationDelta: num("DH_ABLATION_DELTA", 0.15),
     abstainConf: num("DH_ABSTAIN_CONF", 0.15),
     ablation: !flag("DH_DISABLE_ABLATION"),
+    twinChars: Math.max(200, int("DH_TWIN_STATE_CHARS", 4000)),
     debug: flag("DH_DEBUG"),
 };
 const log = (...args: unknown[]): void => {
@@ -682,14 +683,28 @@ function abstainLine(kind: string, why: string, ans: any): string {
     return `\n\n---\n**JEV closing decision: ABSTAINED** (${kind}, ${why})\n- ${distLine(ans)}`;
 }
 
-async function evidenceDelta(
-    state: any, questions: any, kind: string, ans: any, timeoutMs: number,
-): Promise<number | null> {
+/**
+ * Masked twin frame: numbers redacted, then each message capped. The twin is a diagnostic,
+ * not a verdict, and masking diverges from the real frame at the first byte of the user turn,
+ * so it can never reuse that run's KV prefix - the cap keeps its prefill a fraction of the
+ * real closing round on a CPU judge. Returns null when there is nothing to ablate.
+ */
+function twinFrame(state: any, cap: number): any[] | null {
     const msgs = (Array.isArray(state) ? state : [{ role: "user", content: String(state) }]).map((m: any) => ({
         ...m,
         content: maskEvidence(m.content),
     }));
     if (JSON.stringify(msgs) === JSON.stringify(state)) return null;
+    const n = Math.max(200, Number(cap) || 4000);
+    for (const m of msgs) m.content = String(m.content).slice(0, n);
+    return msgs;
+}
+
+async function evidenceDelta(
+    state: any, questions: any, kind: string, ans: any, timeoutMs: number,
+): Promise<number | null> {
+    const msgs = twinFrame(state, CFG.twinChars);
+    if (!msgs) return null;
     const r = await jevPost("/v1/systemone", { state: msgs, questions }, timeoutMs);
     const twin = r.answers && r.answers[Object.keys(questions)[0]];
     if (!twin) return null;
@@ -1049,6 +1064,7 @@ export const __internals = {
     int,
     num,
     maskEvidence,
+    twinFrame,
     topProb,
     floorReason,
     tvDistance,

@@ -168,6 +168,15 @@
         check("gates: abstain line carries the distribution",
             /ABSTAINED/.test(I.abstainLine("binary", "x", { noul: 0.52 })) && /52.0%/.test(I.abstainLine("binary", "x", { noul: 0.52 })));
         const tv = I.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
+        check(
+            "gates: twinFrame masks numbers then caps each message",
+            (() => {
+                const st = [{ role: "user", content: "spearman 0.989 " + "x ".repeat(2000) }, { role: "assistant", content: "pick 3" }];
+                const f = I.twinFrame(st, 500);
+                return !!f && f.every((m) => m.content.length <= 500) && /\[#\]/.test(f[0].content) && !/0\.989/.test(f[0].content);
+            })(),
+        );
+        check("gates: twinFrame returns null with nothing to ablate", I.twinFrame([{ role: "user", content: "no digits here at all" }], 4000) === null);
         check("gates: tvDistance is symmetric", Math.abs(tv - 0.4) < 1e-9, String(tv));
         const sharp = await I.gateVerdict("choice", { probabilities: { a: 0.533, b: 0.467 } },
             async () => I.tvDistance({ a: 0.533, b: 0.467 }, { a: 0.9, b: 0.1 }));

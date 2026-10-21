@@ -150,12 +150,26 @@ function abstainLine(kind, why, ans) {
 }
 
 // Ask the same question with the numbers redacted; the delta is evidence sensitivity.
-async function evidenceDelta(state, questions, kind, ans, timeoutMs) {
+/**
+ * Masked twin frame: numbers redacted, then each message capped. The twin is a diagnostic,
+ * not a verdict, and masking diverges from the real frame at the first byte of the user turn,
+ * so it can never reuse that run's KV prefix - the cap keeps its prefill a fraction of the
+ * real closing round on a CPU judge. Returns null when there is nothing to ablate.
+ */
+function twinFrame(state, cap) {
   const msgs = (Array.isArray(state) ? state : [{ role: "user", content: String(state) }]).map((m) => ({
     ...m,
     content: maskEvidence(m.content),
   }));
   if (JSON.stringify(msgs) === JSON.stringify(state)) return null;
+  const n = Math.max(200, Number(cap) || 4000);
+  for (const m of msgs) m.content = String(m.content).slice(0, n);
+  return msgs;
+}
+
+async function evidenceDelta(state, questions, kind, ans, timeoutMs) {
+  const msgs = twinFrame(state, CFG.twinChars);
+  if (!msgs) return null;
   const r = await jevPost("/v1/systemone", { state: msgs, questions }, timeoutMs);
   const twin = r.answers && r.answers[Object.keys(questions)[0]];
   if (!twin) return null;
@@ -459,4 +473,5 @@ module.exports = {
   gateVerdict,
   abstainLine,
   evidenceDelta,
+  twinFrame,
 };

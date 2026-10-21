@@ -60,6 +60,7 @@ const CFG = {
   ablationDelta: num("DH_ABLATION_DELTA", 0.15),
   abstainConf: num("DH_ABSTAIN_CONF", 0.15),
   ablation: !flag("DH_DISABLE_ABLATION"),
+  twinChars: Math.max(200, int("DH_TWIN_STATE_CHARS", 4000)),
   debug: flag("DH_DEBUG"),
 };
 

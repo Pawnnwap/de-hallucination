@@ -141,6 +141,13 @@ spoils its own twin. The defaults are deliberately conservative. Lower `DH_ABLAT
 (set `DH_DISABLE_ABLATION=1` to disable the gate entirely) to publish more verdicts; raise the
 floors to publish fewer. Thresholds are eyeballed off a handful of probes, not fitted.
 
+Prefill cost: masking rewrites the user turn, so the twin diverges from the real frame at
+its first byte and can never reuse that run's KV prefix. Each twin message is therefore capped
+at `DH_TWIN_STATE_CHARS` (default 4000 characters), which keeps the twin's prefill a fraction
+of the closing round it audits. Nothing in the extension rewrites history on the host side
+except pi's `message_end` template rendering, which rewrites the newest assistant message only
+(the Codex port posts a notice instead and leaves the transcript bytes untouched).
+
 ### Configuration
 
 | var | default | meaning |
@@ -160,6 +167,7 @@ floors to publish fewer. Thresholds are eyeballed off a handful of probes, not f
 | `DH_ABSTAIN_TOPP` | `0.45` | fallback top-p mass floor; also gates the router (flat classification stays `chat`) |
 | `DH_ABLATION_DELTA` | `0.15` | minimum total-variation distance between the real and number-masked verdict distributions |
 | `DH_DISABLE_ABLATION` | off | `=1` skips the evidence-ablation twin (publishes verdicts the twin would veto) |
+| `DH_TWIN_STATE_CHARS` | `4000` | per-message cap on the masked twin frame, i.e. its prefill cost on the judge |
 | `DH_DISABLE_ROUTER/_TEMPLATES/_CLOSER/_CHECKER/_DECIDE` | off | `=1` disables one mechanism (all five = stock pi) |
 | `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
 

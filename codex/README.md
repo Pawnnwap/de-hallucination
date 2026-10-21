@@ -63,6 +63,13 @@ that fails either gate posts `**JEV closing decision: ABSTAINED**` with the dist
 Measured cost: a four-way factor question where the judge put 81.9% on the correct option
 abstained at TV=0.014, because the answer had already stated its conclusion.
 
+Cache cost is near zero by construction: the `SessionStart` policy and the `UserPromptSubmit`
+reminder are byte-stable per-session strings appended at the tail of the prompt, `PostToolUse`
+appends the `[vars: ...]` trailer to the newest tool result, `Stop` returns a `systemMessage`
+that is UI-only and adds no model tokens, and no hook rewrites earlier transcript bytes. The only
+extra prefill is the judge traffic: the masked twin re-prefills from scratch (masking edits the
+user turn), capped per message at `DH_TWIN_STATE_CHARS`.
+
 ### 3. Decision and news tools
 
 Two transports are available:
@@ -181,6 +188,7 @@ this repository does not ship one. The hooks, CLI and news search do not need it
 | `DH_ABSTAIN_TOPP` | `0.45` | fallback top-p mass floor; also gates the router (flat classification stays `chat`) |
 | `DH_ABLATION_DELTA` | `0.15` | minimum total-variation distance between the real and number-masked verdict distributions |
 | `DH_DISABLE_ABLATION` | off | `=1` skips the evidence-ablation twin (publishes verdicts the twin would veto) |
+| `DH_TWIN_STATE_CHARS` | `4000` | per-message cap on the masked twin frame, i.e. its prefill cost on the judge |
 | `DH_MAX_NOTICE_CHARS` | `12000` | rendered-notice cap |
 | `DH_CODEX_STATE_DIR` | `%TEMP%/dehall-codex` | hook state (vars, route, counters) |
 | `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
