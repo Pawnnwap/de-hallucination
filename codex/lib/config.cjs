@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -37,10 +38,28 @@ const renderMode = ["notice", "block", "off"].includes(renderModeRaw) ? renderMo
 const toolsModeRaw = env("DH_CODEX_TOOLS", "cli").toLowerCase();
 const toolsMode = ["cli", "mcp", "both"].includes(toolsModeRaw) ? toolsModeRaw : "cli";
 
+/**
+ * Optional jev endpoint file (~/.dehall/jev.json, {"url","key","model"}). It keeps
+ * service endpoints and bearer tokens out of the repo, so codex and pi read the same
+ * service without any per-tool wiring. Environment variables always win over the file.
+ */
+function jevService() {
+  try {
+    const file = path.join(os.homedir(), ".dehall", "jev.json");
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+const JEVSVC = jevService();
+
 const CFG = {
-  jevUrl: env("DH_JEV_URL", "http://127.0.0.1:8090").replace(/\/+$/, ""),
-  jevKey: env("DH_JEV_KEY", ""),
-  jevModel: env("DH_JEV_MODEL", ""),
+  jevUrl: env("DH_JEV_URL", String(JEVSVC.url || "http://127.0.0.1:8090")).replace(/\/+$/, ""),
+  jevKey: env("DH_JEV_KEY", String(JEVSVC.key || "")),
+  jevModel: env("DH_JEV_MODEL", String(JEVSVC.model || "")),
+  // Generous on purpose: the closing round runs at 3x this and the judge may be a
+  // remote service. Never shrink it to fit a hook — raise the hook's own timeout.
   jevTimeoutMs: int("DH_JEV_TIMEOUT_MS", 20000),
   maxVarChars: int("DH_MAX_VAR_CHARS", 8192),
   maxNoticeChars: int("DH_MAX_NOTICE_CHARS", 12000),
@@ -54,6 +73,13 @@ const CFG = {
   decide: !flag("DH_DISABLE_DECIDE"),
   renderMode,
   toolsMode,
+  // The per-turn reminder is redundant with the session policy (which stays in the prompt
+  // for the whole session). Off by default: every turn's reminder is extra bytes inside
+  // the prefix the remote model caches, plus a prompt mutation per turn.
+  turnReminder: flag("DH_CODEX_TURN_REMINDER"),
+  // How much of the expanded final reply may be inlined into a block reason. A block
+  // reason goes into the model's input and stays there, so the payload is capped hard.
+  renderPayloadChars: int("DH_CODEX_RENDER_PAYLOAD", 2000),
   checkRetries: Math.max(0, Math.min(2, int("DH_CODEX_CHECK_RETRIES", 1))),
   abstainMargin: num("DH_ABSTAIN_MARGIN", 0.10),
   abstainTopP: num("DH_ABSTAIN_TOPP", 0.45),

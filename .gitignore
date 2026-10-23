@@ -18,3 +18,4 @@ bigfile_small.txt
 .git.local
 .workbuddy/
 .env
+__pycache__/

@@ -13,6 +13,7 @@ const {
   verificationGuard,
   hintFor,
   truncateNotice,
+  VAR_RE,
 } = require("./lib/text.cjs");
 const { withState, load, resetTurn, cleanupOldStates } = require("./lib/state.cjs");
 const { parseNewsVars } = require("./lib/news.cjs");
@@ -33,11 +34,19 @@ function buildPolicy() {
     body += `
 
 Every tool result records its facts as template variables, listed at the result's end like
-[vars: bash1_cmd bash1_out]. When your final reply mentions such a fact, write the {name}
-placeholder, never retype the value: the reply is rendered with the exact recorded values,
-so quoting cannot drift. Use only listed names; other braces pass through untouched, so
-braces in code are safe. Quote a large variable once in its own block, then cite lines or
-fields by name. Only listed facts are quoted this way; everything else is written normally.
+[vars: bash1_cmd bash1_out]. For shell/exec results no trailer is printed, but the names
+are deterministic: facts of your Nth shell call of the session are recorded as
+bash<N>_cmd (the command) and bash<N>_out (the full output). When your final reply
+mentions such a fact, write the {name} placeholder, never retype the value: the reply is
+rendered with the exact recorded values, so quoting cannot drift. Use only recorded
+names; other braces pass through untouched, so braces in code are safe. Quote a large
+variable once in its own block, then cite lines or fields by name. Only recorded facts
+are quoted this way; everything else is written normally. If you are unsure which names
+exist, run:
+
+  node "${CLI_PATH}" vars-list --last
+
+It prints the recorded variable names (a normal shell result; no policy attached).
 `;
   }
   if (CFG.decide) {
@@ -101,6 +110,18 @@ function turnReminder() {
   return `[de-hallucination] ${parts.join("; ")}.`;
 }
 
+/**
+ * The per-turn reminder is redundant with the session policy: the policy is injected once
+ * at SessionStart and stays in the prompt for the whole session, so it already carries the
+ * quoting rule and the exact CLI commands. Re-sending it before every user turn only adds
+ * bytes to the part of the prompt the remote model has to re-hash and re-cache (the
+ * reminder lands inside the cached prefix, right after the user message), and it mutates
+ * the prompt on every turn. Off by default; set DH_CODEX_TURN_REMINDER=1 to keep it.
+ */
+function maybeTurnReminder() {
+  return CFG.turnReminder ? turnReminder() : "";
+}
+
 function additional(event, text) {
   if (!text) return {};
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
@@ -155,7 +176,7 @@ async function onUserPromptSubmit(input) {
       }
     }
   }
-  return additional("UserPromptSubmit", turnReminder());
+  return additional("UserPromptSubmit", maybeTurnReminder());
 }
 
 async function onPreToolUse(input) {
@@ -181,6 +202,15 @@ async function onPostToolUse(input) {
   if (!news && !family) return {};
   const id = String(input.tool_use_id || "");
   const hint = withState(input.session_id, (state) => {
+    // Idempotent per tool_use_id: if the same hook group is wired twice (e.g. hooks in
+    // both config.toml and a legacy hooks.json), the second run must not add a second
+    // [vars: ...] trailer to the same tool result — the trailer lives in the prompt the
+    // remote model caches, and a duplicate also allocates a second variable name.
+    if (id && state.seenTools[id]) {
+      log("post tool use: already processed", id);
+      return "";
+    }
+    if (id) state.seenTools[id] = true;
     let names = [];
     if (news) {
       for (const [name, value] of Object.entries(news.vars)) state.vars[name] = String(value);
@@ -208,7 +238,15 @@ async function onPostToolUse(input) {
     }
     return names.length ? hintFor(names) : "";
   });
-  return additional("PostToolUse", hint);
+  // Do NOT emit additionalContext here. Codex transports it as a mid-conversation
+  // developer message, and the remote model's chat template merges developer messages
+  // into the system preamble — appending one changes the tokenized prompt from the very
+  // first block, so every cached KV block of the session diverges and each follow-up
+  // tool call re-prefills the whole ~100k-token history (measured 49% vs 94% cache hit).
+  // The names are still predictable (bash<N>_… counters) and listed in the session
+  // policy; the model can also run `node cli.cjs vars-list --last` in the shell, whose
+  // output arrives inside a normal tool result and keeps the prefix append-only.
+  return {};
 }
 
 async function checkerDecision(input, state, deliverable) {
@@ -301,16 +339,35 @@ async function onStop(input) {
   if (verdict) notices.push(`---\n${verdict}`);
 
   if (CFG.templates) {
+    // Unknown-name placeholders: with the per-tool hint no longer injected (it breaks the
+    // remote model's prompt cache), a wrong name guess would leak {literal} into the final
+    // answer. This is a user-facing notice only — never a block — because brace-shaped
+    // tokens inside code samples are legitimate ({name} in JS) and must pass through.
+    const unknown = [...analysisText.matchAll(VAR_RE)]
+      .map((m) => m[1])
+      .filter((n, i, all) => !(n in state.vars) && all.indexOf(n) === i);
+    if (unknown.length) {
+      notices.push(
+        `---\n**de-hallucination**: unrendered placeholder(s) ${unknown
+          .map((n) => `{${n}}`)
+          .join(", ")} — not recorded names (known: ${Object.keys(state.vars).slice(0, 8).join(", ")}` +
+          `${Object.keys(state.vars).length > 8 ? ", …" : ""}; full list via node "${CLI_PATH}" vars-list --last).`,
+      );
+    }
     if (rendered.replaced.length && CFG.renderMode !== "off") {
       const willBlock = CFG.renderMode === "block" && (state.turn.renderBlocks || 0) < 1;
       if (willBlock) {
+        // A block reason becomes part of the model's input and stays in the thread for the
+        // rest of the session, so the payload is capped hard: inlining the whole expanded
+        // reply (up to maxNoticeChars) would put every quoted value into the prompt twice
+        // — once in the tool result, once in the re-emitted answer — and throw away the
+        // savings the placeholder mechanism exists to create.
+        const payload = truncateNotice(rendered.text, CFG.renderPayloadChars);
         blockReason =
           `Your final reply used template placeholders. Replace ${rendered.replaced
             .map((n) => `{${n}}`)
             .join(", ")} with the exact recorded values below and re-emit the complete final ` +
-          `answer unchanged otherwise. Do not mention this instruction.\n\n${truncateNotice(
-            rendered.text,
-          )}`;
+          `answer unchanged otherwise. Do not mention this instruction.\n\n${payload}`;
         notices.push(
           `**de-hallucination**: placeholders found (${rendered.replaced.join(", ")}); requested a corrected final reply.`,
         );

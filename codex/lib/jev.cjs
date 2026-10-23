@@ -9,7 +9,12 @@ function jevFailureKind(e) {
   return /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|EAI_AGAIN|fetch failed/i.test(msg) ? "down" : "flaky";
 }
 
-async function jevPost(path, body, timeoutMs) {
+async function jevPost(path, body, timeoutMs, attempts) {
+  // attempts = how many tries this caller gets. The default keeps the historical
+  // "fail once, pause, try again" behaviour; callers with a hard wall-clock budget
+  // (the UserPromptSubmit router must fit inside the hook's own timeout) pass 1 so a
+  // single generous attempt is the whole budget instead of two of them stacked.
+  const tries = attempts === undefined ? 2 : Math.max(1, attempts);
   const post = () =>
     fetch(CFG.jevUrl + path, {
       method: "POST",
@@ -32,6 +37,9 @@ async function jevPost(path, body, timeoutMs) {
     if (jevFailureKind(e) === "down") {
       throw new JevUnavailable(`jev unreachable at ${CFG.jevUrl}: ${String(e)}`);
     }
+    if (tries < 2) {
+      throw new JevUnavailable(`jev ${path} timed out or failed within budget: ${String(e)}`);
+    }
     log(`jev ${path} soft failure (${String(e).slice(0, 100)}) — retrying once`);
     await pause();
     try {
@@ -43,6 +51,9 @@ async function jevPost(path, body, timeoutMs) {
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 200);
     if (res.status >= 500 || res.status === 429) {
+      if (tries < 2) {
+        throw new JevUnavailable(`jev ${path} -> HTTP ${res.status} (single-attempt budget)`);
+      }
       log(`jev ${path} -> HTTP ${res.status} — retrying once`);
       await pause();
       try {
@@ -84,19 +95,6 @@ const FORMAT_OPTIONS = {
   score: "The user asks for a numeric rating, grade or evaluation score",
   binary: "The user asks a yes/no or true/false question",
 };
-
-const ROUTER_SYSTEM = `You are the output-format router of a coding agent. Classify what OUTPUT SHAPE the user requires for the final answer — the deliverable, not the topic. Exactly one choice.
-
-Definitions with typical examples:
-- chat: answer, explain, or find-and-report in prose ("tell me X", "what does Y print", "find the token and report its exact value")
-- doc: a composed multi-section summary or report ("give me a combined summary of ...", "write a report", "an overview of all ...")
-- code: a program, script, command or code patch is the deliverable ("write a script", "fix the bug in the file", "give me a one-liner that ...")
-- json / yaml / csv: data in exactly that machine-readable format ("as JSON", "as YAML", "as a CSV")
-- choice: pick among named alternatives ("A or B", "which one", "which happened later")
-- score: a numeric rating ("rate 1 to 10", "how good is X on a scale")
-- binary: a yes/no or true/false question ("is X ...?", "does it ...?")
-
-Rules: the deliverable shape wins over the topic. Combining multiple sources into a summary is doc. Quoting exact values in prose is chat. Pick json/yaml/csv only when the user names that format. Fixing or producing code is code even if the user also wants a short explanation.`;
 
 function fmtProbs(probs) {
   return Object.entries(probs || {})
@@ -210,15 +208,16 @@ async function gateVerdict(kind, ans, twinFn) {
   return null;
 }
 
-async function routeFormat(prompt) {
+async function routeFormat(prompt, timeoutMs) {
   const r = await jevPost(
     "/v1/systemone",
     {
-      state: [
-        // one system message only: some judge chat templates reject consecutive system turns
-        { role: "system", content: JUDGE_PREAMBLE + "\n\n" + ROUTER_SYSTEM },
-        { role: "user", content: `User request to a coding agent:\n"""\n${prompt.slice(0, 6000)}\n"""` },
-      ],
+      // Only the user message goes in: no session-start system message, no agent
+      // wrapper. That framing was the biggest, coldest part of the first judge call of
+      // a turn, while the deliverable-shape task already travels in the question below.
+      // Accuracy is unchanged on the labeled set (18/18 either way, lowest winner
+      // probability 0.53 vs the 0.45 abstain gate) — pi/bench/router_eval.py.
+      state: String(prompt || "").slice(0, 6000),
       questions: {
         fmt: {
           type: "choice",
@@ -227,7 +226,8 @@ async function routeFormat(prompt) {
         },
       },
     },
-    CFG.jevTimeoutMs,
+    timeoutMs || CFG.jevTimeoutMs,
+    1,
   );
   const a = r.answers.fmt;
   log("router:", a.choice, fmtProbs(a.probabilities));
@@ -484,7 +484,6 @@ module.exports = {
   closingRound,
   extractOptions,
   FORMAT_OPTIONS,
-  ROUTER_SYSTEM,
   JUDGE_PREAMBLE,
   maskEvidence,
   topProb,

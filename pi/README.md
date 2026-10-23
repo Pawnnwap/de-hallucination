@@ -74,6 +74,33 @@ model decides itself.
 later?") route to `choice` and get a JEV verdict over the extracted alternatives. A dead live
 backend falls back to the local corpus.
 
+### 5. What the extension costs the remote model's prompt cache
+
+The remote model caches the *prefix* of the prompt, so anything the extension adds to the
+prompt is paid on every request of the session. Measured with `pi/bench/cache_probe.py`
+against an OpenAI-compatible backend: with the extension on, the first request is **2.5 kB
+larger** than stock pi (the policy section ~1 kB + the two tool schemas ~1.5 kB), and every
+later request is the same size plus the `[vars: …]` trailers.
+
+Two decisions keep that overhead from touching the cached prefix:
+
+- **The policy travels as a prompt *section*, not as a forced system prompt.** `before_agent_start`
+  also accepts `systemPrompt`, but that path replaces the whole prompt for the run: pi then
+  projects the forced text onto every request of the run and drops the transcript's own system
+  messages from the request, so the bytes on the wire can drift from the session — and from
+  the prefix the remote model already cached. Changing a section is pi's documented
+  alternative: pi records the change as a transcript delta and renders every request from the
+  same sections, so the prompt stays byte-stable across turns. The section is installed on
+  *every* run, including custom-triggered ones, because pi's section diff would otherwise
+  strip it from the transcript.
+- **The tools block is the most-cached region of the prompt**, so the tool schemas are kept
+  short, and `DH_DISABLE_NEWS=1` drops the news tool's schema from it entirely.
+
+The `[vars: …]` trailer on each tool result is the one part that grows with the session; it
+carries the variable names only, and it is what lets the model quote a recorded value instead
+of retyping it (the rendered answer stays out of the prompt — pi's `message_end` replacement
+reaches the session file and the TUI, not the next turn's model context).
+
 ## Everything fails open
 
 jev unreachable ⇒ router defaults to `chat`, closer/checker skip, `jev_decide` errors loudly.
@@ -169,6 +196,7 @@ except pi's `message_end` template rendering, which rewrites the newest assistan
 | `DH_DISABLE_ABLATION` | off | `=1` skips the evidence-ablation twin (publishes verdicts the twin would veto) |
 | `DH_TWIN_STATE_CHARS` | `4000` | per-message cap on the masked twin frame, i.e. its prefill cost on the judge |
 | `DH_DISABLE_ROUTER/_TEMPLATES/_CLOSER/_CHECKER/_DECIDE` | off | `=1` disables one mechanism (all five = stock pi) |
+| `DH_DISABLE_NEWS` | off | `=1` drops the news tool (and its schema) from the request's tools block |
 | `DH_DEBUG` | off | `=1` for `[dehall] …` logs on stderr |
 
 ## Tests
@@ -178,6 +206,9 @@ node pi/smoke/units.js    # 19 deterministic checks, no LLM: render/strip, JSON 
                           # format checks, verification guard, env parsing, var capture
 bash pi/smoke/smoke.sh    # units, then binary/choice/json/templates + fail-open against the stack
 python pi/bench/router_eval.py         # router accuracy with/without the preamble
+python pi/bench/cache_probe.py --base-url <remote> --api-key <key> --model <provider/model>
+                          # what the extension costs the remote model's prompt cache:
+                          # prompt bytes, tool-schema size, prefix share per request
 ```
 
 ## Benchmark

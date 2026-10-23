@@ -188,12 +188,13 @@ function verificationGuard(finalText, vars, bashMax) {
 }
 
 const hintFor = (names) =>
-  `[vars: ${names.join(" ")}] — quote these as {name} placeholders in the final reply.`;
+  `[vars: ${names.join(" ")}] — quote as {name} placeholders.`;
 
-function truncateNotice(text) {
-  return text.length <= CFG.maxNoticeChars
+function truncateNotice(text, maxChars) {
+  const limit = Number.isFinite(maxChars) ? maxChars : CFG.maxNoticeChars;
+  return text.length <= limit
     ? text
-    : text.slice(0, CFG.maxNoticeChars) + `\n…[notice truncated, ${text.length - CFG.maxNoticeChars} chars omitted]`;
+    : text.slice(0, limit) + `\n…[notice truncated, ${text.length - limit} chars omitted]`;
 }
 
 module.exports = {
@@ -212,4 +213,5 @@ module.exports = {
   hintFor,
   truncateNotice,
   KNOWN_PREFIX_RE,
+  VAR_RE,
 };

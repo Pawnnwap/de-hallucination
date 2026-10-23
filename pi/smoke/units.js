@@ -192,6 +192,33 @@
         check("gates: num() falls back on malformed env", (() => { process.env.DH_ABSTAIN_TOPP = "abc"; const v = I.num("DH_ABSTAIN_TOPP", 0.45); delete process.env.DH_ABSTAIN_TOPP; return v === 0.45; })());
     }
 
+    // 12. the policy travels as a prompt SECTION, not as a forced system prompt
+    {
+        // A forced system prompt makes pi re-project the whole prompt onto every request
+        // of the run and drop the transcript's own system messages from it; a section is
+        // recorded in the transcript and rendered from the same bytes every time, so the
+        // remote model's prefix cache stays aligned with the session.
+        const opts = { sections: { existing: "keep me" } };
+        const ok = I.applyPolicySection(opts);
+        check(
+            "policy: delivered as a prompt section",
+            ok && typeof opts.sections[I.POLICY_SECTION] === "string" && opts.sections[I.POLICY_SECTION].length > 0,
+            JSON.stringify(opts.sections),
+        );
+        check(
+            "policy: section keeps the other sections and is idempotent",
+            (() => {
+                const first = JSON.stringify(opts.sections);
+                I.applyPolicySection(opts);
+                return opts.sections.existing === "keep me" && JSON.stringify(opts.sections) === first;
+            })(),
+        );
+        check(
+            "policy: section body names the placeholder rule and the decide tool",
+            /\{name\}/.test(I.policySectionBody()) && /jev_decide/.test(I.policySectionBody()),
+        );
+    }
+
     console.log(`\n===== units: ${pass} passed, ${fail} failed =====`);
     process.exit(fail ? 1 : 0);
 })().catch((e) => {

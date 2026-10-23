@@ -10,7 +10,7 @@ user prompt ──► ① UserPromptSubmit hook: jev format router
                 │
 Codex turn ────► tools (Bash / apply_patch / …)
                 │  PreToolUse: allocate bash1/edit1/…
-                │  PostToolUse: record {vars} + inject the [vars: …] hint
+                │  PostToolUse: record {vars} in state (no model-context injection)
                 ▼
 Stop hook ─────► ② closing round (binary / choice / score)
                 ③ format checker (JSON / YAML / CSV / code)
@@ -23,10 +23,12 @@ Stop hook ─────► ② closing round (binary / choice / score)
 ### 1. Verbatim quoting via `{var}` templates
 
 `PreToolUse` assigns a stable prefix to each call (`bash1`, `edit2`, …). `PostToolUse` records
-the important values from `tool_input`/`tool_response` and injects a hint:
+the important values from `tool_input`/`tool_response` into per-session state (and, for news
+results, the returned `[vars: …]` list already rides in the tool output itself). The session
+policy documents the deterministic names and offers `node codex/cli.cjs vars-list --last`:
 
 ```
-[vars: bash1_cmd bash1_out] — quote these as {name} placeholders in the final reply.
+- {bash1_out} chars=17 preview="unusual-tokens_XY73"
 ```
 
 The model is instructed to write the placeholder instead of retyping the fact. Large blobs
@@ -63,16 +65,42 @@ that fails either gate posts `**JEV closing decision: ABSTAINED**` with the dist
 Measured cost: a four-way factor question where the judge put 81.9% on the correct option
 abstained at TV=0.014, because the answer had already stated its conclusion.
 
-Cache cost is near zero by construction: the `SessionStart` policy and the `UserPromptSubmit`
-reminder are byte-stable per-session strings appended at the tail of the prompt (the policy is
-injected once per session, not again on resume), `PostToolUse` appends the `[vars: ...]` trailer
-to the newest tool result, `Stop` returns a `systemMessage` that is UI-only and adds no model
-tokens, and no hook rewrites earlier transcript bytes. The judge traffic is cache-friendly too:
-every jev frame (router, closing, ablation twin, `jev-decide`) opens with the same byte-stable
-system preamble, so consecutive judge calls reuse the engine's KV prefix; the masked twin leaves
-that preamble untouched and only redacts the evidence messages, so it reuses the real closing
-call's prefix up to the first redacted digit instead of re-prefilling from scratch (the rest is
-capped per message at `DH_TWIN_STATE_CHARS`).
+Cache cost, measured against the request bytes Codex actually sends. Codex posts the whole
+input array on every turn with `store=false` and `prompt_cache_key=<session id>`, so the remote
+model's prefix cache is the only cache and the hit rate is the share of the prompt that is
+byte-identical to the previous request. The hooks therefore have to add nothing that moves
+inside the cached prefix:
+
+- **The `SessionStart` policy is the only permanent addition**: one `developer` item of
+  ~1.2 kB at a fixed position (right after the AGENTS.md/environment block), injected once
+  per session — never again on resume, which would stack a second copy in the middle of the
+  prefix.
+- **The per-turn `UserPromptSubmit` reminder is off by default** (`DH_CODEX_TURN_REMINDER=1`
+  re-enables it). It was redundant: the session policy already carries the quoting rule and the
+  exact CLI commands, so the reminder only re-sent those bytes inside the cached prefix on
+  every turn and mutated the prompt once per turn.
+- **`PostToolUse` injects nothing into the model context.** Codex transports hook
+  `additionalContext` as a mid-conversation `developer` item, and the target chat template
+  merges developer messages into the system preamble — appending one re-renders the tokenized
+  prompt from the first block, so every cached KV block diverges and every tool-call follow-up
+  re-prefills the whole history (measured: 49% vs 94–97% prompt-cache hit under the same load).
+  The recorded variable names stay predictable (`bash<N>_cmd`/`bash<N>_out`, one per shell
+  call of the session) and the session policy documents them; the model can also run
+  `node codex/cli.cjs vars-list --last`, whose output is a normal tool result and keeps the
+  prefix append-only.
+- **`Stop` returns a `systemMessage`**, which is UI-only and adds no model tokens. The one
+  exception is a `decision: "block"`, whose reason *does* enter the model's input and stays
+  in the thread for the rest of the session — so the inlined payload is capped at
+  `DH_CODEX_RENDER_PAYLOAD` (2 kB) instead of the full expanded reply.
+- No hook rewrites earlier transcript bytes, and the judge traffic is local: it never touches
+  the remote model's prompt.
+
+The judge side is cache-friendly by construction too: every jev frame (router, closing,
+ablation twin, `jev-decide`) opens with the same byte-stable system preamble, so consecutive
+judge calls reuse the engine's KV prefix; the masked twin leaves that preamble untouched and
+only redacts the evidence messages, so it reuses the real closing call's prefix up to the
+first redacted digit instead of re-prefilling from scratch (the rest is capped per message at
+`DH_TWIN_STATE_CHARS`).
 
 ### 3. Decision and news tools
 
@@ -114,9 +142,14 @@ and jev running separately (local adapter on `:8090` by default).
 node codex/install.cjs /path/to/your/project
 ```
 
-This writes `<project>/.codex/hooks.json` and nothing else. Codex loads project hooks only
-for trusted projects, so approve the project/hook review prompt once. For non-interactive
-runs in an already-trusted project:
+This writes the hook tables into `<project>/.codex/config.toml` (`[[hooks.SessionStart]]`,
+`[[hooks.UserPromptSubmit]]`, `[[hooks.PreToolUse]]`, `[[hooks.PostToolUse]]`,
+`[[hooks.Stop]]`) and nothing else. Codex ≥ 0.163 reads hooks from `config.toml` — a separate
+`hooks.json` is the pre-0.163 location and is ignored, so installing into both would run
+every hook twice and put the policy and the per-tool trailers into the prompt twice. The
+installer replaces only its own hook tables, so re-running it never leaves a second copy.
+Codex loads project hooks only for trusted projects, so approve the project/hook review
+prompt once. For non-interactive runs in an already-trusted project:
 
 ```bash
 codex exec --dangerously-bypass-hook-trust ...
@@ -130,8 +163,11 @@ If you cannot trust the project (for example a shared checkout), use `--user` in
 node codex/install.cjs --user
 ```
 
-This merges the hook groups into `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`) and
+This merges the hook tables into `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`) and
 leaves existing hooks untouched. Existing files are backed up as `*.bak-dehall`.
+
+For a pre-0.163 Codex that still reads `hooks.json`, add `--legacy-json` to write that file
+instead (never both).
 
 ### Optional MCP transport
 
@@ -185,6 +221,8 @@ this repository does not ship one. The hooks, CLI and news search do not need it
 | `DH_NEWS_LIVE` | off | `=1` searches live HN via Algolia |
 | `DH_CODEX_TOOLS` | `cli` | `cli`, `mcp`, or `both` tool policy |
 | `DH_CODEX_RENDER` | `notice` | `notice`, `block` (one corrective re-emission), or `off` |
+| `DH_CODEX_TURN_REMINDER` | off | `=1` re-sends the per-turn reminder (redundant with the session policy; costs cached-prefix bytes every turn) |
+| `DH_CODEX_RENDER_PAYLOAD` | `2000` | max chars of the expanded reply inlined into a `block` reason (the reason enters the model's input and stays in the thread) |
 | `DH_CODEX_CHECK_RETRIES` | `1` | max Stop-block correction attempts for invalid deliverables (0–2) |
 | `DH_MAX_VAR_CHARS` | `8192` | per-variable value cap |
 | `DH_ABSTAIN_MARGIN` | `0.10` | binary flatness floor: minimum `\|p-0.5\|` to publish a verdict |

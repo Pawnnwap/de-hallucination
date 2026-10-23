@@ -20,6 +20,12 @@ Both versions share the same idea:
 
 Everything fails open: with jev down, the agent behaves like the stock host.
 
+**Remote-model cache cost.** The remote model caches the *prefix* of the prompt, so what a
+port adds to the prompt is paid on every request. Both ports were measured against the exact
+request bytes they send: pi delivers its policy as a prompt *section* (a transcript delta)
+rather than a forced system prompt, and the Codex port injects one session-scoped policy item
+and no per-turn reminder. `pi/bench/cache_probe.py` reproduces the measurement.
+
 ## Quick start
 
 ### pi

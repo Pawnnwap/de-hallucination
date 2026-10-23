@@ -43,7 +43,8 @@
  * Use with:  pi --extension ./pi/index.ts --model spark-local/<model-id>
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, promises as fsp } from "fs";
+import { existsSync, promises as fsp, readFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 
 // ---------------------------------------------------------------------------
@@ -94,13 +95,28 @@ function num(name: string, fallback: number): number {
     return n;
 }
 
+/**
+ * Optional jev endpoint file (~/.dehall/jev.json, {"url","key","model"}): the same file
+ * codex reads, so one hand-written service file serves both tools and no bearer token is
+ * ever committed. Environment variables win over the file.
+ */
+function jevService(): Record<string, string> {
+    try {
+        const parsed = JSON.parse(readFileSync(join(homedir(), ".dehall", "jev.json"), "utf8"));
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+const JEVSVC = jevService();
+
 const CFG = {
-    jevUrl: env("DH_JEV_URL", "http://127.0.0.1:8090").replace(/\/+$/, ""),
+    jevUrl: env("DH_JEV_URL", String(JEVSVC.url || "http://127.0.0.1:8090")).replace(/\/+$/, ""),
     jevTimeoutMs: int("DH_JEV_TIMEOUT_MS", 20000),
     // Optional auth/model for hosted or authenticated Jev-compatible services. The local
     // adapter ignores both; the hosted API (api.typesafe.ai) requires `model` and a bearer key.
-    jevKey: env("DH_JEV_KEY", ""),
-    jevModel: env("DH_JEV_MODEL", ""),
+    jevKey: env("DH_JEV_KEY", String(JEVSVC.key || "")),
+    jevModel: env("DH_JEV_MODEL", String(JEVSVC.model || "")),
     sparkUrl: env("DH_SPARK_URL", "http://127.0.0.1:8091/v1").replace(/\/+$/, ""),
     sparkModel: env("DH_SPARK_MODEL", "Spark-X2.5-4B"),
     sparkCtx: int("DH_SPARK_CTX", 16384),
@@ -115,6 +131,9 @@ const CFG = {
     closer: !flag("DH_DISABLE_CLOSER"),
     checker: !flag("DH_DISABLE_CHECKER"),
     decide: !flag("DH_DISABLE_DECIDE"),
+    // The news tool's schema sits in the tools block of every request (the remote's
+    // cached prompt head), so it costs cache on every turn even when no turn needs it.
+    news: !flag("DH_DISABLE_NEWS"),
     abstainMargin: num("DH_ABSTAIN_MARGIN", 0.10),
     abstainTopP: num("DH_ABSTAIN_TOPP", 0.45),
     ablationDelta: num("DH_ABLATION_DELTA", 0.15),
@@ -397,32 +416,20 @@ const FORMAT_OPTIONS: Record<string, string> = {
 };
 
 /**
- * Hard-injected routing preamble — a system-prompt-alike sent as the leading state
- * message. Measured on bench/router_eval.py (18 labeled prompts): without it the 4B
- * decision model scores 14/18 at 0.762 avg winner-probability (misrouting
- * run-and-report to `code`, revision reads to `choice`); with it 17/18 at 0.907, and
- * the one residual miss (chat vs doc) is behaviorally identical downstream.
- * Keep in sync with PREAMBLE in bench/router_eval.py.
+ * Router frame: the user message only — no session-start system message, no agent
+ * wrapper. That framing was the biggest, coldest part of the first judge call of a turn,
+ * while the deliverable-shape task already travels in the question below.
+ *
+ * Measured on bench/router_eval.py against the live service (18 labeled prompts,
+ * the internal bench endpoint): user-message-only 18/18 at 0.829 avg winner-probability,
+ * lowest 0.53 against the 0.45 abstain gate; with the old preamble 18/18 at 0.967. The
+ * preamble was added for the local 4B judge (14/18 -> 17/18, see git history); the
+ * current service does not need it. bench/router_eval.py keeps its own copy of the
+ * preamble for that A/B.
  */
-const ROUTER_SYSTEM = `You are the output-format router of a coding agent. Classify what OUTPUT SHAPE the user requires for the final answer — the deliverable, not the topic. Exactly one choice.
-
-Definitions with typical examples:
-- chat: answer, explain, or find-and-report in prose ("tell me X", "what does Y print", "find the token and report its exact value")
-- doc: a composed multi-section summary or report ("give me a combined summary of ...", "write a report", "an overview of all ...")
-- code: a program, script, command or code patch is the deliverable ("write a script", "fix the bug in the file", "give me a one-liner that ...")
-- json / yaml / csv: data in exactly that machine-readable format ("as JSON", "as YAML", "as a CSV")
-- choice: pick among named alternatives ("A or B", "which one", "which happened later")
-- score: a numeric rating ("rate 1 to 10", "how good is X on a scale")
-- binary: a yes/no or true/false question ("is X ...?", "does it ...?")
-
-Rules: the deliverable shape wins over the topic. Combining multiple sources into a summary is doc. Quoting exact values in prose is chat. Pick json/yaml/csv only when the user names that format. Fixing or producing code is code even if the user also wants a short explanation.`;
-
 async function routeFormat(prompt: string): Promise<OutputFormat> {
     const r = await jevPost("/v1/systemone", {
-        state: [
-            { role: "system", content: ROUTER_SYSTEM },
-            { role: "user", content: `User request to a coding agent:\n"""\n${prompt.slice(0, 6000)}\n"""` },
-        ],
+        state: String(prompt || "").slice(0, 6000),
         questions: {
             fmt: {
                 type: "choice",
@@ -1004,8 +1011,9 @@ function verificationGuard(finalText: string, maxNOverride?: number): string | n
 // ---------------------------------------------------------------------------
 
 const POLICY_MARKER = "## Verbatim quoting policy (de-hallucination)";
+/** Name of the prompt section that carries the policy (must match /^[a-z][a-z0-9_-]*$/). */
+const POLICY_SECTION = "dehall";
 const POLICY_QUOTING = `
-
 Every tool result records its facts as template variables, listed at the result's end like
 [vars: bash1_cmd bash1_out]. When your final reply mentions such a fact, write the {name}
 placeholder, never retype the value: the reply is rendered with the exact recorded values,
@@ -1026,6 +1034,35 @@ function buildPolicy(): string {
     if (CFG.templates) body += POLICY_QUOTING;
     if (CFG.decide) body += POLICY_DECIDE;
     return body ? POLICY_MARKER + body : "";
+}
+
+/**
+ * The policy body for the prompt section (the section name carries the marker).
+ */
+function policySectionBody(): string {
+    let body = "";
+    if (CFG.templates) body += POLICY_QUOTING;
+    if (CFG.decide) body += POLICY_DECIDE;
+    return body.trim();
+}
+
+/**
+ * Install the policy as a prompt SECTION of `options`.
+ *
+ * Why a section and not a forced system prompt: `before_agent_start` also accepts
+ * `systemPrompt`, but that path REPLACES the whole prompt for the run — pi then projects
+ * the forced text onto every request of the run and drops the transcript's own system
+ * messages from the request. The bytes on the wire can then drift from the session (and
+ * from the prefix the remote model already cached), and the policy is not recorded in the
+ * transcript at all. Changing a prompt section is pi's documented alternative: pi records
+ * the change as a transcript delta and renders every request from the same sections, so
+ * the prompt stays byte-stable across turns and the remote's prefix cache keeps hitting.
+ */
+function applyPolicySection(options: any): boolean {
+    const body = policySectionBody();
+    if (!body) return false;
+    options.sections = { ...(options.sections || {}), [POLICY_SECTION]: body };
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,6 +1093,9 @@ export const __internals = {
     tvDistance,
     abstainLine,
     gateVerdict,
+    policySectionBody,
+    applyPolicySection,
+    POLICY_SECTION,
 };
 
 export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
@@ -1101,7 +1141,7 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
         name: "jev_decide",
         label: "jev decide",
         description:
-            "Delegate a decision to the calibrated local decision service. Give the decision context and 2-255 candidate choices (short stable key + concrete description). Returns the chosen key, a probability for every choice, and a confidence. Use this whenever a decision among alternatives matters, instead of guessing in prose.",
+            "Delegate a decision among candidates to the calibrated decision service. Give the context and 2-255 choices (short stable key + what it means); get the chosen key, a probability per choice and a confidence. Use it instead of guessing in prose.",
         promptSnippet:
             "jev_decide: delegate a decision among candidates, get calibrated probabilities back.",
         parameters: {
@@ -1153,18 +1193,19 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
     }
 
     // --- Feature 4: news_search tool ---
+    if (CFG.news) {
     pi.registerTool({
         name: "news_search",
         label: "news search",
         description:
-            "Search a news archive for articles matching a query. Returns the top matches with date, headline and body. Use it for news, announcements, incidents or recent events; quote facts from its [vars: …] list as {name} placeholders.",
+            "Search the news archive for articles matching a query; returns the top matches with date, headline and body. Quote facts from its [vars: …] list as {name} placeholders.",
         promptSnippet: "news_search: search the news archive (local corpus, or live HN with DH_NEWS_LIVE=1).",
         parameters: {
             type: "object",
             properties: {
                 query: { type: "string", description: "Search terms, e.g. 'Pulsegrid outage duration'" },
-                limit: { type: "number", description: "Max matches to return (default 3, max 10)" },
-                hours: { type: "number", description: "Only articles from the last N hours (time-sorted). Use e.g. 24 for today's headlines; omit for relevance search." },
+                limit: { type: "number", description: "Max matches (default 3, max 10)" },
+                hours: { type: "number", description: "Only articles from the last N hours (time-sorted)" },
             },
             required: ["query"],
         } as any,
@@ -1216,7 +1257,7 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
                 return `#${k} [${h.source}] ${h.date}\n${h.title}\n${h.text.slice(0, 700)}`;
             });
             const hint = CFG.templates
-                ? `\n[vars: ${names.join(" ")}] — quote these as {name} placeholders in the final reply.`
+                ? `\n[vars: ${names.join(" ")}] — quote as {name} placeholders.`
                 : "";
             return {
                 content: [{ type: "text", text: blocks.join("\n\n") + hint + degraded }],
@@ -1224,13 +1265,20 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
             };
         },
     });
+    }
 
     // --- Feature 2a: router + policy injection on every user request ---
     pi.on("before_agent_start", async (event: any) => {
+        // The policy section must be present on EVERY run, custom-triggered ones too:
+        // pi diffs the prompt sections against the transcript, so a run that skipped the
+        // policy would strip it from the transcript — and from the next request's prompt.
+        const opts = event.systemPromptOptions;
+        const hasSection = opts && typeof opts === "object" && applyPolicySection(opts);
+
         // pi >=1.3 also fires this for extension-triggered runs (messageType "custom",
         // no prompt) — only route actual user prompts. Keep the truthiness check: an
         // absent/undefined messageType (older pi) must still route.
-        if (event.messageType && event.messageType !== "user") return;
+        if (event.messageType && event.messageType !== "user") return undefined;
         runState.prompt = String(event.prompt || "");
         flakeRetryUsed = 0;
         turnBashMax = 0; // guard scope: only this turn's command outputs count
@@ -1258,16 +1306,15 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
                 }
             }
         }
-        // Append the policy for enabled features only; strip a previous copy in case
-        // the base prompt is cumulative.
+        if (hasSection) return undefined;
+        // Fallback for pi builds without prompt sections: force the whole prompt. Strip a
+        // previous copy in case the base prompt is cumulative.
         const policy = buildPolicy();
-        if (policy) {
-            let sp = String(event.systemPrompt || "");
-            const idx = sp.lastIndexOf(POLICY_MARKER);
-            if (idx !== -1) sp = sp.slice(0, idx).replace(/\n+$/, "\n\n");
-            return { systemPrompt: sp + policy };
-        }
-        return undefined;
+        if (!policy) return undefined;
+        let sp = String(event.systemPrompt || "");
+        const idx = sp.lastIndexOf(POLICY_MARKER);
+        if (idx !== -1) sp = sp.slice(0, idx).replace(/\n+$/, "\n\n");
+        return { systemPrompt: sp + policy };
     });
 
     // --- Feature 1: capture variables at tool_call / tool_result time ---
@@ -1301,7 +1348,9 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
         log("vars +=", pairs.map(([n]) => n).join(" "));
         // Discovery hint: names + one short imperative, kept identical to the Codex
         // host. Bare names alone lost placeholder compliance; the imperative keeps it.
-        const hint = `[vars: ${pairs.map(([n]) => n).join(" ")}] — quote these as {name} placeholders in the final reply.`;
+        // Kept short on purpose: the hint rides in the tool result, which every later
+        // request re-sends and the remote's prefix cache re-hashes.
+        const hint = `[vars: ${pairs.map(([n]) => n).join(" ")}] — quote as {name} placeholders.`;
         return { content: [...event.content, { type: "text", text: hint }] };
     });
 

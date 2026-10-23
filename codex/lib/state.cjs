@@ -25,6 +25,9 @@ function defaultState(sessionId) {
     vars: {},
     counters: {},
     callPrefixes: {},
+    // tool_use_ids already processed, so a doubly-wired hook cannot add a second
+    // [vars: ...] trailer (and a second variable name) to the same tool result
+    seenTools: {},
     jevDown: false,
     jevDownSince: 0,
     turn: {
@@ -49,6 +52,7 @@ function load(sessionId) {
       counters: parsed.counters && typeof parsed.counters === "object" ? parsed.counters : {},
       callPrefixes:
         parsed.callPrefixes && typeof parsed.callPrefixes === "object" ? parsed.callPrefixes : {},
+      seenTools: parsed.seenTools && typeof parsed.seenTools === "object" ? parsed.seenTools : {},
       turn: { ...base.turn, ...(parsed.turn || {}) },
     };
   } catch {

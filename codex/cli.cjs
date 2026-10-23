@@ -4,6 +4,9 @@
 const { CFG } = require("./lib/config.cjs");
 const { jevDecide, JevUnavailable } = require("./lib/jev.cjs");
 const { searchNews, newsBase, formatNewsResult } = require("./lib/news.cjs");
+const { stateDir, withState } = require("./lib/state.cjs");
+const fs = require("fs");
+const path = require("path");
 
 function usage() {
   console.log(`de-hallucination CLI (Codex)
@@ -11,9 +14,12 @@ function usage() {
 Usage:
   node codex/cli.cjs news-search <query> [--limit N] [--hours N]
   node codex/cli.cjs jev-decide --context <text> --choice <key>=<description> --choice <key>=<description> [...]
+  node codex/cli.cjs vars-list [--last | --session <id>]
 
-Both commands print the same records as the MCP tools. news-search ends with a
+news-search and jev-decide print the same records as the MCP tools; news-search ends with a
 DEHALL_VARS line so the Codex hooks can turn the returned facts into {placeholders}.
+vars-list prints the recorded template variable names of the latest (or the given)
+session, so the reply can reference {name} placeholders without guessing.
 `);
 }
 
@@ -75,6 +81,57 @@ async function jevDecideCli(args) {
   }
 }
 
+function varsList(args) {
+  const session = takeFlag(args, "--session", "");
+  const last = args.includes("--last");
+  let sessionId = session;
+  if (!sessionId && last) {
+    const dir = stateDir();
+    let best = null;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith(".json")) continue;
+        const st = fs.statSync(path.join(dir, f));
+        if (!best || st.mtimeMs > best.mtimeMs) best = { file: f, mtimeMs: st.mtimeMs };
+      }
+    } catch (e) {
+      console.error(`vars-list: cannot read state dir (${String(e.message || e)}).`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!best) {
+      console.error("vars-list: no recorded sessions found.");
+      process.exitCode = 1;
+      return;
+    }
+    sessionId = best.file.slice(0, -".json".length);
+  }
+  if (!sessionId) {
+    console.error("vars-list: pass --last or --session <id>.");
+    process.exitCode = 2;
+    return;
+  }
+  if (sessionId === "unknown") {
+    console.error("vars-list: only anonymous default state exists (no vars).");
+    return;
+  }
+  const state = withState(sessionId, (st) => ({
+    vars: { ...st.vars },
+    count: Object.keys(st.vars).length,
+  }));
+  const names = Object.keys(state.vars);
+  if (!names.length) {
+    console.log("No template variables recorded for this session yet.");
+    return;
+  }
+  console.log(`Recorded template variables (${names.length}):`);
+  for (const n of names) {
+    const v = String(state.vars[n] || "");
+    const preview = v.length > 60 ? v.slice(0, 57).replace(/\s+/g, " ") + "…" : v.replace(/\s+/g, " ");
+    console.log(`- {${n}} chars=${v.length} preview="${preview}"`);
+  }
+}
+
 (async () => {
   const args = process.argv.slice(2);
   const command = args.shift();
@@ -88,6 +145,10 @@ async function jevDecideCli(args) {
   }
   if (command === "jev-decide") {
     await jevDecideCli(args);
+    return;
+  }
+  if (command === "vars-list") {
+    varsList(args);
     return;
   }
   console.error(`unknown command: ${command}`);

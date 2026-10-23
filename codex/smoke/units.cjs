@@ -156,7 +156,8 @@ const hook = (event, env = {}) =>
     assert.match(p, /Verbatim quoting policy/);
     assert.match(p, /write the \{name\}/);
     assert.match(p, /once in its own block/);
-    assert.match(p, /Only listed facts are quoted this way/);
+    assert.match(p, /Only\s+recorded\s+facts\s+are\s+quoted\s+this\s+way/);
+    assert.match(p, /vars-list/);
     assert.match(p, /cli\.cjs/);
     assert.match(p, /jev-decide/);
     assert.match(p, /news-search/);
@@ -184,7 +185,14 @@ const hook = (event, env = {}) =>
       { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "turn-1", prompt: "read notes", cwd: process.cwd() },
       common,
     );
-    assert.match(prompt.hookSpecificOutput.additionalContext, /de-hallucination/);
+    // No per-turn reminder by default: the session policy already carries the rules, and a
+    // per-turn reminder is extra bytes inside the remote's cached prompt prefix.
+    assert.equal(prompt.hookSpecificOutput, undefined);
+    const promptWithReminder = hook(
+      { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "turn-2", prompt: "read notes", cwd: process.cwd() },
+      { ...common, DH_CODEX_TURN_REMINDER: "1" },
+    );
+    assert.match(promptWithReminder.hookSpecificOutput.additionalContext, /de-hallucination/);
     hook(
       {
         hook_event_name: "PreToolUse",
@@ -210,8 +218,13 @@ const hook = (event, env = {}) =>
       },
       common,
     );
-    assert.match(post.hookSpecificOutput.additionalContext, /bash1_cmd/);
-    assert.match(post.hookSpecificOutput.additionalContext, /bash1_out/);
+    // The hint no longer rides as additionalContext: a mid-conversation developer item
+    // re-renders the remote model's prompt prefix and drops its KV cache. The names are
+    // recorded in state; the session policy and the vars-list CLI carry the contract.
+    assert.deepEqual(post, {});
+    const postState = load(sid);
+    assert.equal(postState.vars.bash1_cmd, "Get-Content notes.txt");
+    assert.equal(postState.vars.bash1_out, "unusual-tokens_XY73\r\n");
     const stop = hook(
       {
         hook_event_name: "Stop",
@@ -265,9 +278,9 @@ const hook = (event, env = {}) =>
       },
       common,
     );
-    const hint = post.hookSpecificOutput.additionalContext;
-    assert.match(hint, /news\d+_r1_title/);
-    const name = hint.match(/news\d+_r1_date/)[0];
+    const newsState = load(sid);
+    const name = Object.keys(newsState.vars).find((n) => /news\d+_r1_date/.test(n));
+    assert.ok(name, "news vars captured in state");
     const stop = hook(
       {
         hook_event_name: "Stop",
@@ -283,8 +296,7 @@ const hook = (event, env = {}) =>
     assert.ok(!stop.systemMessage.includes(`{${name}}`));
   });
 
-  await checkAsync("DH_CODEX_RENDER=block requests one corrected reply", async () => {
-    const sid = "render-block-" + process.pid;
+  await checkAsync("DH_CODEX_RENDER=block requests one corrected reply", async () => {    const sid = "render-block-" + process.pid;
     const common = { DH_DISABLE_ROUTER: "1", DH_CODEX_RENDER: "block" };
     hook(
       { hook_event_name: "UserPromptSubmit", session_id: sid, turn_id: "tr", prompt: "value?", cwd: process.cwd() },
@@ -328,6 +340,53 @@ const hook = (event, env = {}) =>
     );
     assert.equal(stop.decision, "block");
     assert.match(stop.reason, /OK-73/);
+    // The block reason goes into the model's input and stays in the thread, so the
+    // inlined payload is capped (DH_CODEX_RENDER_PAYLOAD, default 2000 chars).
+    const longSid = "render-cap-" + process.pid;
+    const capCommon = { ...common, DH_CODEX_RENDER_PAYLOAD: "120" };
+    hook(
+      { hook_event_name: "UserPromptSubmit", session_id: longSid, turn_id: "tr", prompt: "value?", cwd: process.cwd() },
+      capCommon,
+    );
+    hook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: longSid,
+        turn_id: "tr",
+        tool_name: "Bash",
+        tool_use_id: "call-rc",
+        tool_input: { command: "echo " + "Z".repeat(500) },
+        cwd: process.cwd(),
+      },
+      capCommon,
+    );
+    hook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: longSid,
+        turn_id: "tr",
+        tool_name: "Bash",
+        tool_use_id: "call-rc",
+        tool_input: { command: "echo " + "Z".repeat(500) },
+        tool_response: "Z".repeat(500),
+        cwd: process.cwd(),
+      },
+      capCommon,
+    );
+    const capped = hook(
+      {
+        hook_event_name: "Stop",
+        session_id: longSid,
+        turn_id: "tr",
+        last_assistant_message: "value {bash1_out}",
+        stop_hook_active: false,
+        cwd: process.cwd(),
+      },
+      capCommon,
+    );
+    assert.equal(capped.decision, "block");
+    assert.ok(capped.reason.length < 400, `block reason not capped: ${capped.reason.length} chars`);
+    assert.match(capped.reason, /truncated/);
     const stop2 = hook(
       {
         hook_event_name: "Stop",
@@ -503,7 +562,7 @@ const hook = (event, env = {}) =>
     const f = gates.twinFrame(st, 4000);
     return !!f && f[0].content === gates.JUDGE_PREAMBLE && /\[#\]/.test(f[1].content) && !/0\.061/.test(f[1].content);
   });
-  await checkAsync("judge frames share one byte-stable prefix across router, closing and twin", async () => {
+  await checkAsync("router sends only the user message; closing and twin share a byte-stable prefix", async () => {
     const http = require("http");
     const frames = [];
     const srv = http.createServer((req, res) => {
@@ -555,11 +614,27 @@ const hook = (event, env = {}) =>
       srv.close();
     }
     assert.ok(frames.length >= 3, `expected router+closing+twin frames, got ${frames.length}`);
-    for (const st of frames) {
+    // The router sends the user message alone: no session-start system message, no agent
+    // wrapper (state is a bare string). The framing that used to open this frame was the
+    // biggest, coldest part of the first judge call of a turn.
+    assert.equal(
+      typeof frames[0],
+      "string",
+      `router state must be the bare user message, got ${typeof frames[0]}`,
+    );
+    assert.equal(
+      frames[0],
+      "Is the IC 0.061 monotonic in 2026Q3? yes or no?",
+      "router must send exactly the user message",
+    );
+    // Closing and ablation-twin frames keep the shared byte-stable preamble, so those two
+    // calls still reuse each other's prefix on the judge side.
+    const judgeFrames = frames.slice(1);
+    for (const st of judgeFrames) {
       assert.equal(st[0].role, "system");
       assert.ok(
         String(st[0].content).startsWith(gates.JUDGE_PREAMBLE),
-        "every judge frame must open with the shared preamble",
+        "every closing/twin judge frame must open with the shared preamble",
       );
     }
     const ser = (s) => JSON.stringify(s);
@@ -568,10 +643,10 @@ const hook = (event, env = {}) =>
       while (i < a.length && i < b.length && a[i] === b[i]) i++;
       return i;
     };
-    for (let i = 1; i < frames.length; i++) {
+    for (let i = 1; i < judgeFrames.length; i++) {
       assert.ok(
-        lcp(ser(frames[i - 1]), ser(frames[i])) >= ser([{ role: "system", content: gates.JUDGE_PREAMBLE }]).length - 3,
-        `frames ${i - 1}/${i} lost the shared prefix`,
+        lcp(ser(judgeFrames[i - 1]), ser(judgeFrames[i])) >= ser([{ role: "system", content: gates.JUDGE_PREAMBLE }]).length - 3,
+        `judge frames ${i - 1}/${i} lost the shared prefix`,
       );
     }
   });
@@ -596,6 +671,47 @@ const hook = (event, env = {}) =>
   await checkAsync("gateVerdict skips ablation when there are no numbers to mask", async () => {
     const g = await gates.gateVerdict("binary", { noul: 0.62 }, async () => null);
     assert.equal(g, null);
+  });
+
+  // A doubly-wired PostToolUse hook (hooks in both config.toml and a legacy hooks.json)
+  // must not add a second [vars: ...] trailer to the same tool result: the trailer lives
+  // in the prompt the remote model caches, and a duplicate also allocates a second name.
+  await checkAsync("PostToolUse is idempotent per tool_use_id", async () => {
+    const sid = "dup-" + process.pid;
+    const common = { DH_DISABLE_ROUTER: "1" };
+    const call = {
+      hook_event_name: "PostToolUse",
+      session_id: sid,
+      turn_id: "t",
+      tool_name: "Bash",
+      tool_use_id: "call-dup",
+      tool_input: { command: "echo OK-73" },
+      tool_response: "OK-73\n",
+      cwd: process.cwd(),
+    };
+    const first = hook(call, common);
+    const second = hook(call, common);
+    assert.deepEqual(first, {});
+    assert.deepEqual(second, {});
+    // The names were allocated exactly once (no second variable name).
+    const dupState = load(sid);
+    assert.equal(dupState.vars.bash1_cmd, "echo OK-73");
+    assert.ok(!dupState.vars.bash2_cmd);
+  });
+
+  // Codex >= 0.163 reads hooks from config.toml; installing twice must not leave two
+  // copies of every hook table behind (that would run each hook twice).
+  check("installer writes hooks into config.toml and stays idempotent", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dehall-install-"));
+    const install = path.join(__dirname, "..", "install.cjs");
+    execFileSync(process.execPath, [install, dir], { encoding: "utf8" });
+    execFileSync(process.execPath, [install, dir], { encoding: "utf8" });
+    const cfg = fs.readFileSync(path.join(dir, ".codex", "config.toml"), "utf8");
+    assert.equal((cfg.match(/\[\[hooks\.\w+\]\]/g) || []).length, 5);
+    assert.equal((cfg.match(/hooks\.cjs/g) || []).length, 5);
+    assert.ok(!fs.existsSync(path.join(dir, ".codex", "hooks.json")));
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
   });
 
   fs.rmSync(stateDir, { recursive: true, force: true });
