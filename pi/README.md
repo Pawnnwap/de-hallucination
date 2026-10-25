@@ -209,6 +209,9 @@ python pi/bench/router_eval.py         # router accuracy with/without the preamb
 python pi/bench/cache_probe.py --base-url <remote> --api-key <key> --model <provider/model>
                           # what the extension costs the remote model's prompt cache:
                           # prompt bytes, tool-schema size, prefix share per request
+python pi/bench/pi_cache_audit.py --base-url <engine-proxy-host>:<port> --model <provider/model>
+                          # extension ON vs stock -ne with real usage per request:
+                          # cached tokens, LCP drift positions, [vars:] trailer reach
 ```
 
 ## Benchmark
