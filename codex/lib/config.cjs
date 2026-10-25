@@ -94,4 +94,4 @@ const log = (...args) => {
   if (CFG.debug) console.error("[dehall]", ...args);
 };
 
-module.exports = { CFG, log, int, num, env, flag };
+module.exports = { CFG, log };

@@ -177,6 +177,11 @@
             })(),
         );
         check("gates: twinFrame returns null with nothing to ablate", I.twinFrame([{ role: "user", content: "no digits here at all" }], 4000) === null);
+        check("gates: twinFrame keeps the shared system preamble byte-identical", (() => {
+            const sys = { role: "system", content: "judge preamble 0.5 wording" };
+            const f = I.twinFrame([sys, { role: "user", content: "spearman 0.989" }], 4000);
+            return !!f && f[0].content === sys.content && /\[#\]/.test(f[1].content);
+        })());
         check("gates: tvDistance is symmetric", Math.abs(tv - 0.4) < 1e-9, String(tv));
         const sharp = await I.gateVerdict("choice", { probabilities: { a: 0.533, b: 0.467 } },
             async () => I.tvDistance({ a: 0.533, b: 0.467 }, { a: 0.9, b: 0.1 }));

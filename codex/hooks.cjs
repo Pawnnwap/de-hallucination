@@ -33,56 +33,46 @@ function buildPolicy() {
   if (CFG.templates) {
     body += `
 
-Every tool result records its facts as template variables, listed at the result's end like
-[vars: bash1_cmd bash1_out]. For shell/exec results no trailer is printed, but the names
-are deterministic: facts of your Nth shell call of the session are recorded as
-bash<N>_cmd (the command) and bash<N>_out (the full output). When your final reply
-mentions such a fact, write the {name} placeholder, never retype the value: the reply is
-rendered with the exact recorded values, so quoting cannot drift. Use only recorded
-names; other braces pass through untouched, so braces in code are safe. Quote a large
-variable once in its own block, then cite lines or fields by name. Only recorded facts
-are quoted this way; everything else is written normally. If you are unsure which names
-exist, run:
+Tool results record their facts as template variables. Shell/exec results print no trailer,
+but the names are deterministic: your Nth shell call of the session records bash<N>_cmd
+(the command) and bash<N>_out (the full output). In your final reply, write the {name}
+placeholder instead of retyping a recorded fact: the reply is rendered with the exact
+recorded values, so quoting cannot drift. Use only recorded names; other braces pass
+through untouched, so code braces are safe. Quote a large variable once, then cite lines
+or fields by name. Unsure which names exist? Run:
 
   node "${CLI_PATH}" vars-list --last
-
-It prints the recorded variable names (a normal shell result; no policy attached).
 `;
   }
   if (CFG.decide) {
     if (useMcp) {
       body += `
-When you must decide among candidate options (which fix, which approach, which item), call
-the jev_decide MCP tool (server: dehall) with the context and the choices: it returns
-calibrated probabilities instead of you guessing.
+To decide among candidate options (which fix, which approach, which item), call the
+jev_decide MCP tool (server: dehall) with the context and the choices: it returns
+calibrated probabilities.
 `;
     }
     if (useCli) {
       body += `
-When you must decide among candidate options (which fix, which approach, which item), run
-this with the shell instead of guessing:
+To decide among candidate options, run (repeat --choice per candidate, 2..255):
 
   ${CLI_DECIDE}
-
-Repeat --choice per candidate (2..255). It prints the chosen key, each probability, and a
-confidence.
 `;
     }
   }
   if (useMcp) {
     body += `
-For news, announcements, incidents or recent events, call the news_search MCP tool (server:
-dehall) and quote facts from its [vars: …] list as {name} placeholders.
+For news or recent events, call the news_search MCP tool (server: dehall) and quote facts
+from its [vars: …] list as {name} placeholders.
 `;
   }
   if (useCli) {
     body += `
-For news, announcements, incidents or recent events, run (add --hours 24 for recent
-headlines):
+For news or recent events, run (add --hours 24 for recent headlines):
 
   ${CLI_NEWS}
 
-It prints the matching articles and a [vars: …] list; quote those facts as {name} placeholders.
+Quote the returned facts as {name} placeholders.
 `;
   }
   if (CFG.toolsMode === "both") {
@@ -142,16 +132,17 @@ async function onSessionStart(input) {
 
 async function onUserPromptSubmit(input) {
   const prompt = String(input.prompt || "");
+  let snapshot;
   withState(input.session_id, (state) => {
     resetTurn(state, input.turn_id, prompt);
     if (state.jevDown && Date.now() - state.jevDownSince > JEV_REPROBE_MS) {
       log("router: jev was down — re-probing");
       state.jevDown = false;
     }
+    snapshot = { jevDown: state.jevDown };
   });
 
   if (CFG.router) {
-    const snapshot = load(input.session_id);
     if (snapshot.jevDown) {
       withState(input.session_id, (state) => {
         state.turn.format = "chat";

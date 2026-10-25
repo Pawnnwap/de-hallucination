@@ -45,9 +45,10 @@ is then a new assistant message. Headless `codex exec --json` does not print hoo
 ### 2. Format router and closing round
 
 `UserPromptSubmit` classifies the request with jev into
-`chat / doc / code / json / yaml / csv / choice / score / binary` (same router preamble as
-the pi version). The `Stop` hook renders placeholders first, then runs the closing round,
-format checker and guard on the **rendered** text — the same text the user sees. For
+`chat / doc / code / json / yaml / csv / choice / score / binary` (the same user-message-only
+frame as the pi version — no preamble). The `Stop` hook renders placeholders first, then runs
+the closing round, format checker and guard on the **rendered** text — the same text the user
+sees. For
 `binary / choice / score`, it runs a closing round on `[request, final answer]` and posts
 the calibrated verdict in the hook notice. For `code / json / yaml / csv`, it validates the
 rendered deliverable deterministically: if invalid (including a placeholder whose value
@@ -95,12 +96,12 @@ inside the cached prefix:
 - No hook rewrites earlier transcript bytes, and the judge traffic is local: it never touches
   the remote model's prompt.
 
-The judge side is cache-friendly by construction too: every jev frame (router, closing,
-ablation twin, `jev-decide`) opens with the same byte-stable system preamble, so consecutive
-judge calls reuse the engine's KV prefix; the masked twin leaves that preamble untouched and
-only redacts the evidence messages, so it reuses the real closing call's prefix up to the
-first redacted digit instead of re-prefilling from scratch (the rest is capped per message at
-`DH_TWIN_STATE_CHARS`).
+The judge side is cache-friendly by construction too: every closing, twin and `jev-decide`
+judge frame opens with the same byte-stable system preamble (the router is preamble-free), so
+consecutive judge calls reuse the engine's KV prefix; the masked twin leaves that preamble
+untouched and only redacts the evidence messages, so it reuses the real closing call's prefix
+up to the first redacted digit instead of re-prefilling from scratch (the rest is capped per
+message at `DH_TWIN_STATE_CHARS`).
 
 ### 3. Decision and news tools
 

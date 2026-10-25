@@ -155,8 +155,8 @@ const hook = (event, env = {}) =>
     const p = buildPolicy();
     assert.match(p, /Verbatim quoting policy/);
     assert.match(p, /write the \{name\}/);
-    assert.match(p, /once in its own block/);
-    assert.match(p, /Only\s+recorded\s+facts\s+are\s+quoted\s+this\s+way/);
+    assert.match(p, /large variable once/);
+    assert.match(p, /other\s+braces\s+pass\s+through/);
     assert.match(p, /vars-list/);
     assert.match(p, /cli\.cjs/);
     assert.match(p, /jev-decide/);

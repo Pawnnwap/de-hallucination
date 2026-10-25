@@ -45,9 +45,10 @@ passes through byte-identical, so code blocks cannot be corrupted. Values are ca
 ### 2. Format router, closing round, format checker
 
 Each request is classified by jev (one `choice` question, ~1 s) into `chat / doc / code /
-json / yaml / csv / choice / score / binary`. A hard-injected routing preamble lifted router
-accuracy on 18 labeled prompts from 14/18 @ 0.762 to **17/18 @ 0.907**
-(`python pi/bench/router_eval.py` reproduces both). Then:
+json / yaml / csv / choice / score / binary`. The router sends the bare user message — no
+session framing, no preamble: on the 18 labeled prompts that measured **18/18**, with the
+lowest winner probability at 0.53 still above the 0.45 abstain gate
+(`python pi/bench/router_eval.py` reproduces it, with and without the old preamble). Then:
 
 - **binary / choice / score** — after the model finishes, jev runs a **closing round** on
   `[request, final output sans thinking]`: `noul` for yes/no, extracted alternatives for
@@ -202,8 +203,9 @@ except pi's `message_end` template rendering, which rewrites the newest assistan
 ## Tests
 
 ```bash
-node pi/smoke/units.js    # 19 deterministic checks, no LLM: render/strip, JSON extraction,
-                          # format checks, verification guard, env parsing, var capture
+node pi/smoke/units.js    # 44 deterministic checks, no LLM: render/strip, JSON extraction,
+                          # format checks, verification guard, env parsing, var capture,
+                          # gates (floors, masked twin incl. preamble preservation)
 bash pi/smoke/smoke.sh    # units, then binary/choice/json/templates + fail-open against the stack
 python pi/bench/router_eval.py         # router accuracy with/without the preamble
 python pi/bench/cache_probe.py --base-url <remote> --api-key <key> --model <provider/model>

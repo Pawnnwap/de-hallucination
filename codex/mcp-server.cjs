@@ -11,7 +11,7 @@ const TOOL_DEFS = [
   {
     name: "jev_decide",
     description:
-      "Delegate a decision to the calibrated Jev decision service. Give the decision context and 2-255 candidate choices (short stable key + concrete description). Returns the chosen key, a probability for every choice, and a confidence. Use this whenever a decision among alternatives matters, instead of guessing in prose.",
+      "Delegate a decision among 2-255 candidate choices (short stable key + what each means); returns the chosen key, a probability per choice and a confidence. Use it instead of guessing in prose.",
     inputSchema: {
       type: "object",
       properties: {
@@ -39,17 +39,13 @@ const TOOL_DEFS = [
   {
     name: "news_search",
     description:
-      "Search a news archive for articles matching a query. Returns the top matches with date, headline and body. Use it for any question about news, announcements, incidents or recent events, and quote facts from the [vars: …] placeholders instead of retyping them.",
+      "Search a news archive for articles matching a query; returns the top matches with date, headline and body. Quote facts from its [vars: …] list as {name} placeholders.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search terms, e.g. 'Pulsegrid outage duration'" },
-        limit: { type: "number", description: "Max matches to return (default 3, max 10)" },
-        hours: {
-          type: "number",
-          description:
-            "Only articles from the last N hours (time-sorted). Use e.g. 24 for today's headlines; omit for relevance search.",
-        },
+        limit: { type: "number", description: "Max matches (default 3, max 10)" },
+        hours: { type: "number", description: "Only articles from the last N hours (time-sorted)" },
       },
       required: ["query"],
     },
