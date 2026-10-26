@@ -165,8 +165,11 @@
         const flat = { probabilities: { x: 0.315, y: 0.276, z: 0.23, w: 0.179 } };
         check("gates: flat choice is floored", /top-p/.test(I.floorReason("choice", flat)));
         check("gates: sharp choice passes", I.floorReason("choice", { probabilities: { x: 0.674, y: 0.22, z: 0.106 } }) === "");
-        check("gates: abstain line carries the distribution",
-            /ABSTAINED/.test(I.abstainLine("binary", "x", { noul: 0.52 })) && /52.0%/.test(I.abstainLine("binary", "x", { noul: 0.52 })));
+        check("gates: closing notice is only the choices with their probabilities",
+            I.distLine({ noul: 0.895 }) === "yes 89.5%, no 10.5%"
+            && I.fmtProbs({ no: 0.895, yes: 0.105 }) === "no 89.5%, yes 10.5%"
+            && I.distLine({}) === ""
+            && I.abstain("binary", "x", { noul: 0.52 }) === undefined);
         const tv = I.tvDistance({ a: 0.5, b: 0.5 }, { a: 0.9, b: 0.1 });
         check(
             "gates: twinFrame masks numbers then caps each message",
@@ -185,15 +188,15 @@
         check("gates: tvDistance is symmetric", Math.abs(tv - 0.4) < 1e-9, String(tv));
         const sharp = await I.gateVerdict("choice", { probabilities: { a: 0.533, b: 0.467 } },
             async () => I.tvDistance({ a: 0.533, b: 0.467 }, { a: 0.9, b: 0.1 }));
-        check("gates: masked run getting sharper is evidence-bound, not abstained", sharp === null, String(sharp));
+        check("gates: masked run getting sharper is evidence-bound, not abstained", sharp === true, String(sharp));
         const pub = await I.gateVerdict("binary", { noul: 0.91 }, async () => 0.42);
-        check("gates: sharp evidence-bound verdict publishes", pub === null, String(pub));
+        check("gates: sharp evidence-bound verdict publishes", pub === true, String(pub));
         const ab = await I.gateVerdict("binary", { noul: 0.62 }, async () => 0.03);
-        check("gates: low evidence-sensitivity abstains", !!ab && /evidence-sensitivity/.test(ab), String(ab));
+        check("gates: low evidence-sensitivity abstains", ab === false, String(ab));
         const fb = await I.gateVerdict("choice", flat, async () => 0.4);
-        check("gates: floor beats ablation", !!fb && /top-p/.test(fb), String(fb));
+        check("gates: floor beats ablation", fb === false, String(fb));
         check("gates: no numbers to mask skips ablation",
-            (await I.gateVerdict("binary", { noul: 0.62 }, async () => null)) === null);
+            (await I.gateVerdict("binary", { noul: 0.62 }, async () => null)) === true);
         check("gates: num() falls back on malformed env", (() => { process.env.DH_ABSTAIN_TOPP = "abc"; const v = I.num("DH_ABSTAIN_TOPP", 0.45); delete process.env.DH_ABSTAIN_TOPP; return v === 0.45; })());
     }
 

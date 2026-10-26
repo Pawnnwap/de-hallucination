@@ -62,7 +62,9 @@ under `|p-0.5| < DH_ABSTAIN_MARGIN`; choice/score use the service's `confidence`
 keeps `chat`. **Evidence-ablation twin**: the frame is re-run with every number in the request
 masked to `[#]`; if the two distributions differ by less than `DH_ABLATION_DELTA`
 (total variation), the verdict came from the answer's own prose, not the evidence. A verdict
-that fails either gate posts `**JEV closing decision: ABSTAINED**` with the distribution.
+that fails either gate posts nothing - the reason and the distribution go to the debug log.
+A published verdict is the choices with their probabilities and nothing else: `no 89.5%,
+yes 10.5%`.
 Measured cost: a four-way factor question where the judge put 81.9% on the correct option
 abstained at TV=0.014, because the answer had already stated its conclusion.
 

@@ -65,14 +65,14 @@ note "1. binary -> jev closing round"
 run_pi binary "Is 7 a prime number? Answer with yes or no."
 session_texts binary > "$WORK/binary/session.txt"
 check "router picked binary"      "router: binary"            "$WORK/binary/stderr.log"
-check "closing verdict appended"  "JEV closing decision"      "$WORK/binary/session.txt"
+check "closing verdict appended"  "[0-9]\.[0-9]%"            "$WORK/binary/session.txt"
 
 note "2. choice -> extracted options + closing round"
 run_pi choice "Which is better for quick one-off data munging scripts: Python or Bash? Pick exactly one."
 session_texts choice > "$WORK/choice/session.txt"
 check "router picked choice"      "router: choice"            "$WORK/choice/stderr.log"
 check "options extracted"         "using extracted options python/bash" "$WORK/choice/stderr.log"
-check "closing decision present"  "JEV closing decision"      "$WORK/choice/session.txt"
+check "closing verdict appended"  "[0-9]\\.[0-9]%"            "$WORK/choice/session.txt"
 
 note "3. json -> format checker"
 run_pi json "Give me a JSON object with keys name, language and lines for the file notes.txt in the current directory. The JSON must be the whole answer."
@@ -110,7 +110,7 @@ DH_DEBUG=1 DH_JEV_URL=http://127.0.0.1:8099 pi -ne --extension ./index.ts \
   --model "$MODEL" -p --session-dir "$WORK/dead" \
   "Is 7 a prime number? Answer with yes or no." < /dev/null 2>"$WORK/dead/stderr.log"
 check "failed open to chat"       "failing open to chat"      "$WORK/dead/stderr.log"
-if grep -q "JEV closing" "$WORK/dead/stderr.log"; then echo "FAIL: verdict despite jev down"; FAIL=$((FAIL+1));
+if grep -q "closer: running for format" "$WORK/dead/stderr.log"; then echo "FAIL: verdict despite jev down"; FAIL=$((FAIL+1));
 else echo "PASS: no verdict when jev down"; PASS=$((PASS+1)); fi
 
 printf '\n===== %d passed, %d failed =====\n' "$PASS" "$FAIL"

@@ -525,10 +525,11 @@ const hook = (event, env = {}) =>
     assert.match(gates.floorReason("choice", { probabilities: { x: 0.315, y: 0.276, z: 0.23, w: 0.179 } }), /top-p/);
     assert.equal(gates.floorReason("choice", { probabilities: { x: 0.674, y: 0.22, z: 0.106 } }), "");
   });
-  check("abstainLine says ABSTAINED and shows the distribution", () => {
-    const t = gates.abstainLine("binary", "|p-0.5|=0.020 below 0.1", { noul: 0.52 });
-    assert.match(t, /ABSTAINED/);
-    assert.match(t, /yes 52\.0%/);
+  check("the closing notice is only the choices with their probabilities", () => {
+    assert.equal(gates.distLine({ noul: 0.895 }), "yes 89.5%, no 10.5%");
+    assert.equal(gates.fmtProbs({ no: 0.895, yes: 0.105 }), "no 89.5%, yes 10.5%");
+    assert.equal(gates.distLine({}), "");
+    return gates.abstain("binary", "|p-0.5|=0.020 below 0.1", { noul: 0.52 }) === undefined;
   });
   check("options: four-item list keeps all four labels", () => {
     const r = extractOptions("Which candidate failed: jiban_factor, min_lot_ratio_ts_demean40, peak_ratio_diff or sqw_rangemed_40?");
@@ -656,21 +657,19 @@ const hook = (event, env = {}) =>
   });
   await checkAsync("gateVerdict publishes a sharp, evidence-bound verdict", async () => {
     const g = await gates.gateVerdict("binary", { noul: 0.91 }, async () => 0.42);
-    assert.equal(g, null);
+    assert.equal(g, true);
   });
   await checkAsync("gateVerdict abstains when the masked twin barely moves", async () => {
     const g = await gates.gateVerdict("binary", { noul: 0.62 }, async () => 0.03);
-    assert.match(g, /ABSTAINED/);
-    assert.match(g, /evidence-sensitivity/);
+    assert.equal(g, false);
   });
   await checkAsync("gateVerdict floor beats ablation", async () => {
     const g = await gates.gateVerdict("choice", { probabilities: { a: 0.315, b: 0.276, c: 0.22, d: 0.189 } }, async () => 0.40);
-    assert.match(g, /ABSTAINED/);
-    assert.match(g, /top-p/);
+    assert.equal(g, false);
   });
   await checkAsync("gateVerdict skips ablation when there are no numbers to mask", async () => {
     const g = await gates.gateVerdict("binary", { noul: 0.62 }, async () => null);
-    assert.equal(g, null);
+    assert.equal(g, true);
   });
 
   // A doubly-wired PostToolUse hook (hooks in both config.toml and a legacy hooks.json)

@@ -668,13 +668,14 @@ function topProb(probs: Record<string, number> | undefined): number {
     return vals.length ? Math.max(...vals) : 0;
 }
 
+// The closing notice is exactly this: the choices with their probabilities, sharpest first.
 function distLine(ans: any): string {
     const p = ans && ans.probabilities;
     if (p && Object.keys(p).length) return fmtProbs(p);
     const n = Number(ans && ans.noul);
     return Number.isFinite(n)
         ? `yes ${(n * 100).toFixed(1)}%, no ${((1 - n) * 100).toFixed(1)}%`
-        : "no distribution";
+        : "";
 }
 
 function floorReason(kind: string, ans: any): string {
@@ -693,9 +694,9 @@ function floorReason(kind: string, ans: any): string {
     return tp >= CFG.abstainTopP ? "" : `top-p=${tp.toFixed(3)} below ${CFG.abstainTopP}`;
 }
 
-function abstainLine(kind: string, why: string, ans: any): string {
-    log("closer: abstaining:", kind, why);
-    return `\n\n---\n**JEV closing decision: ABSTAINED** (${kind}, ${why})\n- ${distLine(ans)}`;
+// A gated verdict publishes nothing: reason and distribution go to the debug log only.
+function abstain(kind: string, why: string, ans: any): void {
+    log("closer: abstaining:", kind, why, "-", distLine(ans));
 }
 
 /**
@@ -731,10 +732,13 @@ async function evidenceDelta(
         : tvDistance(ans.probabilities, twin.probabilities);
 }
 
-async function gateVerdict(kind: string, ans: any, twinFn?: () => Promise<number | null>): Promise<string | null> {
+async function gateVerdict(kind: string, ans: any, twinFn?: () => Promise<number | null>): Promise<boolean> {
     const floor = floorReason(kind, ans);
-    if (floor) return abstainLine(kind, floor, ans);
-    if (!CFG.ablation || !twinFn) return null;
+    if (floor) {
+        abstain(kind, floor, ans);
+        return false;
+    }
+    if (!CFG.ablation || !twinFn) return true;
     let d: number | null = null;
     try {
         d = await twinFn();
@@ -742,11 +746,12 @@ async function gateVerdict(kind: string, ans: any, twinFn?: () => Promise<number
         if (e instanceof JevUnavailable) throw e;
         log("ablation twin failed:", String(e));
     }
-    if (d === null) return null;
+    if (d === null) return true;
     if (d < CFG.ablationDelta) {
-        return abstainLine(kind, `evidence-sensitivity TV=${d.toFixed(3)} below ${CFG.ablationDelta}`, ans);
+        abstain(kind, `evidence-sensitivity TV=${d.toFixed(3)} below ${CFG.ablationDelta}`, ans);
+        return false;
     }
-    return null;
+    return true;
 }
 
 async function closingRound(prompt: string, lastOutput: string): Promise<string | null> {
@@ -771,14 +776,11 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
                 log("closer: jev returned no noul probability — skipping verdict");
                 return null;
             }
-            const gate = await gateVerdict("binary", r.answers.verdict, () =>
+            const published = await gateVerdict("binary", r.answers.verdict, () =>
                 evidenceDelta(state, questions, "binary", r.answers.verdict, CFG.jevTimeoutMs * 3),
             );
-            if (gate) return gate;
-            return [
-                `\n\n---\n**JEV closing decision: ${p >= 0.5 ? "YES" : "NO"}** (p=${p.toFixed(3)})`,
-                `- yes: ${(p * 100).toFixed(1)}%  ·  no: ${((1 - p) * 100).toFixed(1)}%`,
-            ].join("\n");
+            if (!published) return null;
+            return `\n\n---\n${distLine(r.answers.verdict)}`;
         }
         if (fmt === "score") {
             const questions = {
@@ -791,22 +793,16 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
             };
             const r = await jevPost("/v1/systemone", { state, questions }, CFG.jevTimeoutMs * 3);
             const a = r.answers.verdict;
-            const gate = await gateVerdict("score", a, () =>
+            const published = await gateVerdict("score", a, () =>
                 evidenceDelta(state, questions, "score", a, CFG.jevTimeoutMs * 3),
             );
-            if (gate) return gate;
+            if (!published) return null;
             const sc = Number(a.score);
             if (!Number.isFinite(sc)) {
                 log("closer: jev returned no score — skipping verdict");
                 return null;
             }
-            const conf = Number(a.confidence);
-            const dist = Object.entries(a.probabilities as Record<string, number>)
-                .sort((x, y) => y[1] - x[1])
-                .slice(0, 3)
-                .map(([lvl, p]) => `level ${lvl}: ${(p * 100).toFixed(1)}%`)
-                .join("  ·  ");
-            return `\n\n---\n**JEV closing score: ${sc.toFixed(2)} / 5** (confidence=${Number.isFinite(conf) ? conf.toFixed(2) : "n/a"})\n- ${dist}`;
+            return `\n\n---\n${fmtProbs(a.probabilities)}`;
         }
         // choice
         const extracted = extractOptions(prompt);
@@ -817,20 +813,14 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
                 `Assistant's final answer and analysis:\n"""\n${lastOutput.slice(0, 12000)}\n"""`,
             ].join("\n\n");
             const d = await jevDecide(decideCtx, extracted);
-            const gate = await gateVerdict("choice", d, async () => {
+            const published = await gateVerdict("choice", d, async () => {
                 const masked = maskEvidence(decideCtx);
                 if (masked === decideCtx) return null;
                 const t = await jevDecide(masked, extracted);
                 return tvDistance(d.probabilities, t.probabilities);
             });
-            if (gate) return gate;
-            const dist = Object.entries(d.probabilities)
-                .sort((x, y) => y[1] - x[1])
-                .slice(0, 3)
-                .map(([k, p]) => `${k}: ${(p * 100).toFixed(1)}%`)
-                .join("  ·  ");
-            const desc = extracted.find((c) => c.key === d.choice)?.description || "";
-            return `\n\n---\n**JEV closing decision: ${d.choice}${desc ? ` (${desc})` : ""}** (confidence=${d.confidence.toFixed(2)})\n- ${dist}`;
+            if (!published) return null;
+            return `\n\n---\n${fmtProbs(d.probabilities)}`;
         }
         // /auto is an llm2jev extension, not part of the published Jev wire format: a 404
         // from a hosted or minimal service means "no option generation here", not "jev is
@@ -860,16 +850,11 @@ async function closingRound(prompt: string, lastOutput: string): Promise<string 
         }
         const a = r.answers.verdict;
         const gateAuto = floorReason("auto", a);
-        if (gateAuto) return abstainLine("auto", gateAuto, a);
-        const gen = a.generated_options as Record<string, string>;
-        const dist = Object.entries(a.probabilities as Record<string, number>)
-            .sort((x, y) => y[1] - x[1])
-            .slice(0, 3)
-            .map(([k, p]) => `${k}: ${(p * 100).toFixed(1)}%`)
-            .join("  ·  ");
-        const desc = gen?.[a.choice] ? ` — ${gen[a.choice]}` : "";
-        const conf = Number(a.confidence);
-        return `\n\n---\n**JEV closing decision: ${a.choice}${desc}** (confidence=${Number.isFinite(conf) ? conf.toFixed(2) : "n/a"})\n- ${dist}`;
+        if (gateAuto) {
+            abstain("auto", gateAuto, a);
+            return null;
+        }
+        return `\n\n---\n${fmtProbs(a.probabilities)}`;
     } catch (e) {
         if (e instanceof JevUnavailable) {
             runState.jevDown = true;
@@ -1109,7 +1094,9 @@ export const __internals = {
     topProb,
     floorReason,
     tvDistance,
-    abstainLine,
+    abstain,
+    distLine,
+    fmtProbs,
     gateVerdict,
     policySectionBody,
     applyPolicySection,

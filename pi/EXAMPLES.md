@@ -20,13 +20,12 @@ Yes, 7 is a prime number.
 ```
 Yes
 ---
-**JEV closing decision: YES** (p=0.999)
-- yes: 99.9%  ·  no: 0.1%
+yes 99.9%  ·  no: 0.1%
 ```
 
 The model's answer stays as evidence; the local decision service has the last word and
 exposes its probability. The same mechanism renders `choice` verdicts
-(e.g. `python 99.9% · bash 0.1%`) and 5-level `score` verdicts.
+(e.g. `python 99.9%, bash 0.1%`) and 5-level `score` verdicts.
 
 ## 2. Byte-exact quoting with provenance
 

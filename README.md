@@ -14,7 +14,7 @@ Both versions share the same idea:
 2. **Format router + closing round** — jev classifies each request; binary/choice/score
    answers get a calibrated closing verdict; JSON/YAML/CSV/code deliverables are validated.
    Every closing verdict also passes a flatness floor and an evidence-ablation gate, and a
-   verdict that fails publishes as `ABSTAINED` ([gates](pi/README.md#closing-round-gates)).
+   verdict that fails publishes nothing ([gates](pi/README.md#closing-round-gates)).
 3. **Verification guard** — a success claim that contradicts the last recorded command
    output is flagged.
 4. **Decision and news tools** — calibrated `jev_decide` and corpus/live-HN `news_search`.

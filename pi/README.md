@@ -151,8 +151,9 @@ reads stdin when it is not a terminal and otherwise blocks with no output.
 ### Closing-round gates
 
 A sharp distribution is only worth publishing if the judge read the evidence, so every closing
-verdict passes two gates. One failure publishes `**JEV closing decision: ABSTAINED**` with the
-distribution instead of a confident number:
+verdict passes two gates. One failure publishes nothing (the reason and the distribution go to
+the debug log) rather than a confident number. A published verdict is the choices with their
+probabilities and nothing else, e.g. `no 89.5%, yes 10.5%`:
 
 - **Flatness floor.** Binary: abstain when `|p - 0.5| < DH_ABSTAIN_MARGIN`. Choice/score: use
   the service's entropy-based `confidence` when present (`< DH_ABSTAIN_CONF`), else a top-p
