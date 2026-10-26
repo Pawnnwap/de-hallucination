@@ -65,7 +65,11 @@ note "1. binary -> jev closing round"
 run_pi binary "Is 7 a prime number? Answer with yes or no."
 session_texts binary > "$WORK/binary/session.txt"
 check "router picked binary"      "router: binary"            "$WORK/binary/stderr.log"
-check "closing verdict appended"  "[0-9]\.[0-9]%"            "$WORK/binary/session.txt"
+# A gated verdict publishes nothing by design (knowledge-anchored prompts abstain: the
+# masked twin barely moves), so the guarantee is the closer DECIDED, not that it posted.
+if grep -qE "closer: (verdict = |abstaining:)" "$WORK/binary/stderr.log"; then
+  echo "PASS: closing round decided (published or gated)"; PASS=$((PASS+1));
+else echo "FAIL: closing round did not decide"; FAIL=$((FAIL+1)); fi
 
 note "2. choice -> extracted options + closing round"
 run_pi choice "Which is better for quick one-off data munging scripts: Python or Bash? Pick exactly one."

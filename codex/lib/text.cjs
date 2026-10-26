@@ -31,21 +31,132 @@ function resultText(toolResponse) {
 
 const VAR_RE = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 const KNOWN_PREFIX_RE = /^(read|bash|powershell|edit|write|grep|find|ls|news)\d+_/;
+/** Sentinel marking a multi-line value that must become a fenced block (never in model text). */
+const PROMOTE_RE = /\u0000P:([a-zA-Z_][a-zA-Z0-9_]*)\u0000/g;
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Fence spans (opener line through closing ```). A placeholder inside one is substituted
+ *  byte-exact — the payload there may be validated by the format checker afterwards. */
+function fenceSpans(text) {
+  const spans = [];
+  const re = /```[^\n]*\n[\s\S]*?(?:\n```|$)/g;
+  for (const m of text.matchAll(re)) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
+
+/** Drop a retyped copy standing next to its placeholder ("{var} → value", "{var}: value").
+ *  The placeholder is substituted with the recorded value, so the copy is redundant — and
+ *  when it drifted, the recorded value is the one that must win. A copy wrapped in
+ *  backticks or quotes is dropped whatever it says (the geometry means "that is, this
+ *  value"); a bare copy only when it byte-matches the recorded value, modulo the
+ *  trailing-newline artifact. */
+function collapseEchoes(text, vars) {
+  const get = (name) => (vars instanceof Map ? vars.get(name) : vars[name]);
+  for (const key of vars instanceof Map ? vars.keys() : Object.keys(vars)) {
+    const value = get(key);
+    if (typeof value !== "string" || !text.includes(`{${key}}`)) continue;
+    const endTrimmed = value.replace(/\s+$/, "");
+    const exact = `${escapeRe(value)}|${escapeRe(endTrimmed)}`;
+    const re = new RegExp(
+      `\\{${escapeRe(key)}\\}(\`?)[ \\t]*(?:→|->|=|:)[ \\t]*` +
+        `(?:\`(?:${exact})\`|\`[^\`\n]{1,400}\`` +
+        `|"(?:${exact})"|"[^"\n]{1,400}"` +
+        `|'(?:${exact})'|'[^'\n]{1,400}'` +
+        `|${exact})`,
+      "g",
+    );
+    text = text.replace(re, (_w, bt) => `{${key}}${bt || ""}`);
+  }
+  return text;
+}
+
+/** Two fenced blocks with byte-identical bodies, separated only by whitespace, are one
+ *  quote: the model retyped as a block what the placeholder already provided. */
+function collapseDuplicateFences(text) {
+  const re = /```[^\n]*\n([\s\S]*?)\n```/g;
+  const fences = [...text.matchAll(re)];
+  if (fences.length < 2) return text;
+  let out = "";
+  let last = 0;
+  let prevBody = null;
+  for (const f of fences) {
+    const at = f.index;
+    const gap = text.slice(last, at);
+    const body = (f[1] || "").replace(/\s+$/, "");
+    const isDup = prevBody !== null && body === prevBody && /^\s*$/.test(gap);
+    if (!isDup) {
+      out += gap + f[0];
+      prevBody = body;
+    }
+    last = at + f[0].length;
+  }
+  return out + text.slice(last);
+}
+
+/** Rewrite the lines that still carry a promotion sentinel: the placeholder (plus any
+ *  wrapping backticks and a "→" that only pointed at its restatement) comes out, and the
+ *  recorded value becomes a fenced block on its own lines right after. */
+function promoteBlocks(text, vars) {
+  if (!text.includes("\u0000P:")) return collapseDuplicateFences(text);
+  const get = (name) => (vars instanceof Map ? vars.get(name) : vars[name]);
+  const out = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    if (inFence || !line.includes("\u0000P:")) {
+      out.push(line);
+      continue;
+    }
+    const names = [...line.matchAll(PROMOTE_RE)].map((m) => m[1]);
+    const rest = line.replace(
+      /[ \t]*`?\u0000P:[a-zA-Z_][a-zA-Z0-9_]*\u0000`?([ \t]*(?:→|->)[ \t]*)?/g,
+      (_w, arrow) => (arrow ? " " : ""),
+    );
+    if (rest.trim() && !/^[-*•]$/.test(rest.trim())) {
+      if (out.length && out[out.length - 1] !== "") out.push("");
+      out.push(rest.trim());
+      out.push("");
+    }
+    for (const n of names) {
+      const body = String(get(n) || "").replace(/\s+$/, "");
+      // a fence must be longer than any backtick run inside the quoted value
+      const fence = "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+      out.push(fence, body, fence, "");
+    }
+  }
+  const joined = out.join("\n").replace(/^\n+/, "");
+  return collapseDuplicateFences(joined);
+}
 
 function renderTemplates(text, vars) {
   const get = (name) => (vars instanceof Map ? vars.get(name) : vars[name]);
-  const cleaned = text
-    .replace(/(^|\n)\[vars: [^\]]*\]( — [^\n]*)?(?=\n|$)/g, "")
-    .replace(/(^|\n)DEHALL_VARS \{[^\n]*\}(?=\n|$)/g, "")
-    .replace(/^\n+/, "");
+  // Drop hint lines the model echoed verbatim from tool results, then retyped copies
+  // standing next to their placeholders, then substitute.
+  const cleaned = collapseEchoes(
+    text
+      .replace(/(^|\n)\[vars: [^\]]*\]( — [^\n]*)?(?=\n|$)/g, "")
+      .replace(/(^|\n)DEHALL_VARS \{[^\n]*\}(?=\n|$)/g, "")
+      .replace(/^\n+/, ""),
+    vars,
+  );
+  const fences = fenceSpans(cleaned);
+  const inFence = (i) => fences.some(([a, b]) => i >= a && i < b);
   const replaced = [];
-  const rendered = cleaned.replace(VAR_RE, (whole, name) => {
+  const marked = cleaned.replace(VAR_RE, (whole, name, offset) => {
     const value = get(name);
     if (value === undefined) return whole;
     if (!replaced.includes(name)) replaced.push(name);
-    return value;
+    if (inFence(offset)) return value; // byte-exact: payloads here get validated afterwards
+    const inline = String(value).replace(/\s+$/, "");
+    if (!inline.includes("\n")) return inline.trim(); // boundary whitespace is a tool artifact
+    return `\u0000P:${name}\u0000`; // multi-line value in prose: promote to a fenced block
   });
-  return { text: rendered, replaced };
+  return { text: promoteBlocks(marked, vars), replaced };
 }
 
 function extractPayload(text, lang) {

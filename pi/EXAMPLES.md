@@ -48,23 +48,23 @@ Fixture: two lines, the first containing `unusual-tokens_XY73`.
 Python 3.13.14
 ```
 
-**with** — same facts, substituted from the recorded tool results:
+**with** — the raw reply quoted `{read1_path}` / `{read1_content}` / `{bash1_out}` (the 29B
+also echoed each value beside its placeholder); the renderer collapses the echoes and
+promotes multi-line values into fenced blocks:
 
 ````
 I read the file and ran the command. Here are the exact facts, quoted per policy:
 
-**File path read:** `notes.txt` → `notes.txt`
+**File path read:** `notes.txt`
 
-**File content (lines):** `first line with unusual-tokens_XY73
-second line
-` → two lines:
+**File content (lines):** two lines:
+
 ```
 first line with unusual-tokens_XY73
 second line
 ```
 
-**Command output:** `Python 3.13.14
-` → `Python 3.13.14`
+**Command output:** `Python 3.13.14`
 ````
 
 ```

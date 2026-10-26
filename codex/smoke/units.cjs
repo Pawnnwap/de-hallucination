@@ -72,6 +72,53 @@ const hook = (event, env = {}) =>
     assert.equal(renderTemplates(src, { bash1_out: "OK" }).text, "answer OK");
   });
 
+  check("render collapses a retyped copy next to its placeholder", () => {
+    const vars = { read1_path: "notes.txt", bash2_exit: "1" };
+    // byte-equal backticked copy, drifted backticked copy, bare byte-equal copy
+    assert.equal(
+      renderTemplates("**File path read:** `{read1_path}` → `notes.txt`", vars).text,
+      "**File path read:** `notes.txt`",
+    );
+    assert.equal(renderTemplates("exit was `{bash2_exit}` → `0`", vars).text, "exit was `1`");
+    assert.equal(
+      renderTemplates("plain {read1_path} -> notes.txt end", vars).text,
+      "plain notes.txt end",
+    );
+    assert.equal(
+      renderTemplates('Version: {bash3_out} -> "Python 3.13.14".', { bash3_out: "Python 3.13.14\n" }).text,
+      "Version: Python 3.13.14.",
+    );
+    assert.equal(renderTemplates("bad: {bash4_out} -> '0.1'", { bash4_out: "9.9" }).text, "bad: 9.9");
+  });
+
+  check("render promotes a multi-line value to a block and dedupes the retyped fence", () => {
+    const vars = { read1_content: "first line with unusual-tokens_XY73\nsecond line\n" };
+    const src = [
+      "**File content (lines):** `{read1_content}` → two lines:",
+      "```",
+      "first line with unusual-tokens_XY73",
+      "second line",
+      "```",
+    ].join("\n");
+    const want = [
+      "**File content (lines):** two lines:",
+      "",
+      "```",
+      "first line with unusual-tokens_XY73",
+      "second line",
+      "```",
+    ].join("\n");
+    const out = renderTemplates(src, vars);
+    assert.equal(out.text, want);
+    assert.deepEqual(out.replaced, ["read1_content"]);
+  });
+
+  check("render keeps fence substitution byte-exact, inline substitution boundary-trimmed", () => {
+    const vars = { write1_content: '{"a": 1}\n', bash1_out: "Python 3.13.14\n" };
+    assert.equal(renderTemplates("```json\n{write1_content}\n```", vars).text, '```json\n{"a": 1}\n\n```');
+    assert.equal(renderTemplates("out: {bash1_out} done", vars).text, "out: Python 3.13.14 done");
+  });
+
   check("JSON array is valid deliverable", () => {
     assert.equal(validateFormat("```json\n[1,2]\n```", "json"), true);
     assert.equal(validateFormat('prefix {"ok":true} suffix', "json"), true);
@@ -155,7 +202,8 @@ const hook = (event, env = {}) =>
     const p = buildPolicy();
     assert.match(p, /Verbatim quoting policy/);
     assert.match(p, /write the \{name\}/);
-    assert.match(p, /large variable once/);
+    assert.match(p, /placeholder alone/);
+    assert.match(p, /fenced code block/);
     assert.match(p, /other\s+braces\s+pass\s+through/);
     assert.match(p, /vars-list/);
     assert.match(p, /cli\.cjs/);

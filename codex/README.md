@@ -34,8 +34,12 @@ policy documents the deterministic names and offers `node codex/cli.cjs vars-lis
 The model is instructed to write the placeholder instead of retyping the fact. Large blobs
 are quoted once and referenced by line/field, not pasted repeatedly. The `Stop` hook renders
 every known placeholder to the exact recorded value and posts the rendered reply in a hook
-notice. Unknown braces pass through byte-identical, so code is safe. Values are capped by
-`DH_MAX_VAR_CHARS`.
+notice. Unknown braces pass through byte-identical, so code is safe. Rendering is
+context-aware: fenced code blocks get the recorded bytes verbatim (validators see raw
+payloads); in prose a single-line value is trimmed at its whitespace boundary; a multi-line
+value becomes a fenced block on its own lines; a retyped copy standing next to its
+placeholder (`{var}` → `value`) is collapsed — when the copy drifted, the recorded value is
+the one shown. Values are capped by `DH_MAX_VAR_CHARS`.
 
 Codex hooks cannot rewrite the final assistant message in place. The default is a **notice**
 (the rendered reply is shown in the TUI hook cell). Set `DH_CODEX_RENDER=block` to have the

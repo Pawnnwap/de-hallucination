@@ -46,6 +46,74 @@
         check("render: strips echoed [vars:] hint line", out === "the path is /p", JSON.stringify(out));
     }
 
+    // 2b. rendering is context-aware: a retyped copy next to its placeholder collapses,
+    //     multi-line values become fenced blocks, fence payloads stay byte-exact
+    {
+        const vars = new Map([
+            ["read1_path", "notes.txt"],
+            ["bash2_exit", "1"],
+        ]);
+        const a = I.renderTemplates("**File path read:** `{read1_path}` → `notes.txt`", vars);
+        check(
+            "render: byte-equal echo after placeholder collapses",
+            a === "**File path read:** `notes.txt`",
+            JSON.stringify(a),
+        );
+        const b = I.renderTemplates("exit was `{bash2_exit}` → `0`", vars);
+        check(
+            "render: drifted echo collapses, recorded value wins",
+            b === "exit was `1`",
+            JSON.stringify(b),
+        );
+        const c = I.renderTemplates("plain {read1_path} -> notes.txt end", vars);
+        check(
+            "render: bare byte-equal echo collapses",
+            c === "plain notes.txt end",
+            JSON.stringify(c),
+        );
+        const d = I.renderTemplates('Version: {bash3_out} -> "Python 3.13.14".', new Map([["bash3_out", "Python 3.13.14\n"]]));
+        check(
+            'render: quoted echo collapses ("value")',
+            d === "Version: Python 3.13.14.",
+            JSON.stringify(d),
+        );
+        const e = I.renderTemplates("bad: {bash4_out} -> '0.1'", new Map([["bash4_out", "9.9"]]));
+        check(
+            "render: single-quoted drifted echo collapses, recorded value wins",
+            e === "bad: 9.9",
+            JSON.stringify(e),
+        );
+    }
+    {
+        const vars = new Map([["read1_content", "first line with unusual-tokens_XY73\nsecond line\n"]]);
+        const src = "**File content (lines):** `{read1_content}` → two lines:\n```\nfirst line with unusual-tokens_XY73\nsecond line\n```";
+        const want = "**File content (lines):** two lines:\n\n```\nfirst line with unusual-tokens_XY73\nsecond line\n```";
+        const out = I.renderTemplates(src, vars);
+        check(
+            "render: multi-line value promotes to a block, retyped fence dedupes",
+            out === want,
+            JSON.stringify(out),
+        );
+    }
+    {
+        const vars = new Map([
+            ["write1_content", '{"a": 1}\n'],
+            ["bash1_out", "Python 3.13.14\n"],
+        ]);
+        const inFence = I.renderTemplates("```json\n{write1_content}\n```", vars);
+        check(
+            "render: inside a fence the value is byte-exact (trailing newline kept)",
+            inFence === "```json\n{\"a\": 1}\n\n```",
+            JSON.stringify(inFence),
+        );
+        const inline = I.renderTemplates("out: {bash1_out} done", vars);
+        check(
+            "render: inline value trims the trailing-newline artifact",
+            inline === "out: Python 3.13.14 done",
+            JSON.stringify(inline),
+        );
+    }
+
     // 3. JSON extraction: a fenced ARRAY must survive prose that contains {braces}
     {
         const text = 'Here is the result {as requested}:\n```json\n[1, 2, 3]\n```';

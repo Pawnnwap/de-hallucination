@@ -38,8 +38,9 @@ but the names are deterministic: your Nth shell call of the session records bash
 (the command) and bash<N>_out (the full output). In your final reply, write the {name}
 placeholder instead of retyping a recorded fact: the reply is rendered with the exact
 recorded values, so quoting cannot drift. Use only recorded names; other braces pass
-through untouched, so code braces are safe. Quote a large variable once, then cite lines
-or fields by name. Unsure which names exist? Run:
+through untouched, so code braces are safe. Write each placeholder alone — never also its
+value beside it — and quote a multi-line value once as a fenced code block containing only
+{name}, then cite lines or fields by name. Unsure which names exist? Run:
 
   node "${CLI_PATH}" vars-list --last
 `;

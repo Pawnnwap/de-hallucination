@@ -39,8 +39,13 @@ A per-request policy plus a `[vars: …]` hint on each tool result tell the mode
 those facts as `{varname}` instead of retyping them. Large blobs are quoted once and
 referenced by line/field, not pasted repeatedly. The final message is rendered by exact
 substitution (f-string semantics). **Only known names are substituted** — every other brace
-passes through byte-identical, so code blocks cannot be corrupted. Values are capped at
-`DH_MAX_VAR_CHARS` with an explicit truncation marker.
+passes through byte-identical, so code blocks cannot be corrupted. Rendering is
+context-aware: inside a fenced code block the recorded value is substituted byte-exact
+(validators see raw bytes); in prose a single-line value is trimmed only at its whitespace
+boundary; a multi-line value becomes a fenced block on its own lines. A retyped copy
+standing next to its placeholder (`{var}` → `value`) is collapsed — when the copy drifted,
+the recorded value is the one shown — and two adjacent identical fenced blocks collapse to
+one. Values are capped at `DH_MAX_VAR_CHARS` with an explicit truncation marker.
 
 ### 2. Format router, closing round, format checker
 

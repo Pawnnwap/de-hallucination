@@ -19,3 +19,4 @@ bigfile_small.txt
 .workbuddy/
 .env
 __pycache__/
+pi/.remote-test/
