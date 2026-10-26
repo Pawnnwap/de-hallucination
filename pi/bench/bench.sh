@@ -88,7 +88,7 @@ run_one() { # run_one <arm> <task> <i>
       if [ "$arm" = "without" ]; then
         eval "export $BASELINE_ENV"
       fi
-      DH_DEBUG=1 pi --extension "$ROOT/index.ts" \
+      DH_DEBUG=1 pi -ne --extension "$ROOT/index.ts" \
         --model "$MODEL" -p --session-dir "$dir" "$prompt" < /dev/null 2>"$dir/stderr.log"
     )
     flaked "$dir" || break

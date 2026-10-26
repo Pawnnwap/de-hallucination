@@ -76,7 +76,16 @@ run_pi choice "Which is better for quick one-off data munging scripts: Python or
 session_texts choice > "$WORK/choice/session.txt"
 check "router picked choice"      "router: choice"            "$WORK/choice/stderr.log"
 check "options extracted"         "using extracted options python/bash" "$WORK/choice/stderr.log"
-check "closing verdict appended"  "[0-9]\\.[0-9]%"            "$WORK/choice/session.txt"
+# A gated verdict publishes nothing by design — an answer that argues its own conclusion
+# spoils the masked twin (observed: 90.1% on the right option, TV=0.016) — so the
+# guarantee is the closer DECIDED, same contract as the binary check above. When it did
+# publish, the verdict block carries probabilities.
+if grep -qE "closer: (verdict = |abstaining:)" "$WORK/choice/stderr.log"; then
+  echo "PASS: choice closing round decided (published or gated)"; PASS=$((PASS+1));
+else echo "FAIL: choice closing round did not decide"; FAIL=$((FAIL+1)); fi
+if grep -q "abstaining:" "$WORK/choice/stderr.log" || grep -qE "[0-9]\.[0-9]%" "$WORK/choice/session.txt"; then
+  echo "PASS: choice verdict block or gate abstention present"; PASS=$((PASS+1));
+else echo "FAIL: choice produced neither a verdict nor a gate abstention"; FAIL=$((FAIL+1)); fi
 
 note "3. json -> format checker"
 run_pi json "Give me a JSON object with keys name, language and lines for the file notes.txt in the current directory. The JSON must be the whole answer."
