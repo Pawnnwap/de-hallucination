@@ -69,8 +69,10 @@ lowest winner probability at 0.53 still above the 0.45 abstain gate
 ### 3. `jev_decide` tool
 
 `jev_decide(context, choices[])` returns the argmax choice, a probability for every choice,
-and a confidence — instead of a guess in prose. If jev is unreachable the tool throws and the
-model decides itself.
+and a confidence — instead of a guess in prose. The decision is registered as
+`{jevN_choice}` / `{jevN_confidence}` / `{jevN_decision}` variables (the same capture as
+news results), so a quoted verdict renders byte-exact instead of inviting invented
+placeholder names. If jev is unreachable the tool throws and the model decides itself.
 
 ### 4. `news_search` tool
 

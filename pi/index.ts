@@ -516,7 +516,7 @@ function varsForTool(toolName: string, prefix: string, input: AnyRecord, resultT
 // ---------------------------------------------------------------------------
 
 const VAR_RE = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
-const KNOWN_PREFIX_RE = /^(read|bash|powershell|edit|write|grep|find|ls|news)\d+_/;
+const KNOWN_PREFIX_RE = /^(read|bash|powershell|edit|write|grep|find|ls|news|jev)\d+_/;
 /** Sentinel marking a multi-line value that must become a fenced block (never in model text). */
 const PROMOTE_RE = /\u0000P:([a-zA-Z_][a-zA-Z0-9_]*)\u0000/g;
 
@@ -1199,6 +1199,7 @@ export const __internals = {
     vars,
     int,
     num,
+    KNOWN_PREFIX_RE,
     maskEvidence,
     twinFrame,
     topProb,
@@ -1299,8 +1300,19 @@ export default async function dehallucination(pi: ExtensionAPI): Promise<void> {
                     .map(([k, p]) => `- ${k}: ${(p * 100).toFixed(1)}%`)
                     .join("\n");
                 const report = `Decision: ${d.choice} (confidence ${d.confidence.toFixed(2)})\n${dist}`;
+                // Record the decision like news_search records its hits: without a recorded
+                // name the model invents one ({jev1_choice}) and it leaks unresolved.
+                let hint = "";
+                if (CFG.templates) {
+                    const n = (toolCounters.get("jev") || 0) + 1;
+                    toolCounters.set("jev", n);
+                    vars.set(`jev${n}_choice`, d.choice);
+                    vars.set(`jev${n}_confidence`, d.confidence.toFixed(2));
+                    vars.set(`jev${n}_decision`, cap(report));
+                    hint = `\n[vars: jev${n}_choice jev${n}_confidence jev${n}_decision] — quote as {name} placeholders.`;
+                }
                 return {
-                    content: [{ type: "text", text: report }],
+                    content: [{ type: "text", text: report + hint }],
                     details: d,
                 };
                 } catch (e) {

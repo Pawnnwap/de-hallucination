@@ -295,6 +295,34 @@
         );
     }
 
+    // 13. jev_decide decision vars: recorded names render, the scheme counts as known
+    {
+        const vars = new Map([
+            ["jev1_choice", "python"],
+            ["jev1_confidence", "0.94"],
+            ["jev1_decision", "Decision: python (confidence 0.94)\n- python: 93.6%"],
+        ]);
+        const out = I.renderTemplates(
+            "Use {jev1_choice} (confidence {jev1_confidence}). Verdict:\n{jev1_decision}",
+            vars,
+        );
+        // the multi-line decision value promotes to a fenced block on its own lines
+        check(
+            "render: jev decision vars substitute (news-style capture)",
+            out ===
+                "Use python (confidence 0.94). Verdict:\n```\nDecision: python (confidence 0.94)\n- python: 93.6%\n```\n",
+            JSON.stringify(out),
+        );
+        check(
+            "render: jev scheme counts as known-prefix",
+            I.KNOWN_PREFIX_RE.test("jev1_choice") && I.KNOWN_PREFIX_RE.test("jev12_decision"),
+        );
+        check(
+            "render: invented jev var without a record stays literal (byte-safe)",
+            I.renderTemplates("{jev1_choice}", new Map()) === "{jev1_choice}",
+        );
+    }
+
     console.log(`\n===== units: ${pass} passed, ${fail} failed =====`);
     process.exit(fail ? 1 : 0);
 })().catch((e) => {
